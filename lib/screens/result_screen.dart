@@ -185,7 +185,7 @@ class _ResultScreenState extends State<ResultScreen>
                             'RUT ' + result.maskedRut!,
                             style: const TextStyle(
                               fontSize: 18,
-                              fontWeight: FontWeight.w850,
+                              fontWeight: FontWeight.w800,
                               letterSpacing: .25,
                               color: AppColors.ink,
                             ),
@@ -232,7 +232,7 @@ class _ResultScreenState extends State<ResultScreen>
                   style: TextStyle(
                     fontSize: 11,
                     color: AppColors.muted,
-                    fontWeight: FontWeight.w650,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
