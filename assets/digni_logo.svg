@@ -1,0 +1,15 @@
+<svg width="640" height="210" viewBox="0 0 640 210" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g" x1="38" y1="35" x2="164" y2="172" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#18C7C4"/>
+      <stop offset="1" stop-color="#008C98"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(18 18)">
+    <path d="M34 22H96C143 22 174 51 174 86C174 126 144 157 95 157H34V22Z" fill="url(#g)"/>
+    <path d="M68 53H95C122 53 139 66 139 88C139 112 122 126 94 126H68V53Z" fill="white" fill-opacity="0.95"/>
+    <circle cx="157" cy="36" r="13" fill="#18C7C4"/>
+  </g>
+  <text x="222" y="112" fill="#171A1C" font-family="Arial, Helvetica, sans-serif" font-size="82" font-weight="800" letter-spacing="-4">Digni</text>
+  <text x="228" y="151" fill="#008C98" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" letter-spacing="5">E-TICKET</text>
+</svg>
