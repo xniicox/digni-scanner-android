@@ -359,7 +359,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
                           'Escanea QR DIGNI o QR de cédula. La detección es automática.',
                           style: TextStyle(
                             color: Colors.white,
-                            fontWeight: FontWeight.w650,
+                            fontWeight: FontWeight.w600,
                             height: 1.35,
                           ),
                         ),
