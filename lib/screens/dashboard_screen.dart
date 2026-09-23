@@ -299,7 +299,7 @@ class DashboardScreen extends StatelessWidget {
                     child: Text(
                       'Dispositivo autorizado · Última sincronización hace 1 min',
                       style: TextStyle(
-                        fontWeight: FontWeight.w650,
+                        fontWeight: FontWeight.w600,
                         color: AppColors.muted,
                         fontSize: 12,
                       ),
