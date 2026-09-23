@@ -1,27 +1,31 @@
 name: digni_scanner
-description: DIGNI Scanner Android v1.0
+description: DIGNI Scanner Android v1.1
 publish_to: "none"
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
-  sdk: ">=3.4.0 <4.0.0"
+  sdk: ">=3.7.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  mobile_scanner: ^6.0.2
-  geolocator: ^13.0.2
-  dio: ^5.7.0
-  flutter_secure_storage: ^9.2.2
-  connectivity_plus: ^6.1.1
-  device_info_plus: ^11.2.0
-  package_info_plus: ^8.1.2
+  mobile_scanner: ^7.4.2
+  permission_handler: ^12.0.1
+  flutter_svg: ^2.2.1
+  geolocator: ^14.0.2
+  dio: ^5.9.0
+  flutter_secure_storage: ^11.2.0
+  connectivity_plus: ^7.0.0
+  device_info_plus: ^12.2.0
+  package_info_plus: ^9.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/digni_logo.svg
