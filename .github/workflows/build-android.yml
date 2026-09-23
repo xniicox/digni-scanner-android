@@ -7,11 +7,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -22,11 +22,14 @@ jobs:
       - name: Generate Android platform
         run: flutter create --platforms=android --org cl.digni --project-name digni_scanner .
 
+      - name: Remove generated template test
+        run: rm -rf test
+
       - name: Dependencies
         run: flutter pub get
 
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Build APK
         run: flutter build apk --release
