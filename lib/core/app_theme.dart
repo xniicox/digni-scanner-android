@@ -32,7 +32,7 @@ ThemeData buildTheme() {
         color: AppColors.ink,
       ),
       headlineMedium: TextStyle(
-        fontWeight: FontWeight.w850,
+        fontWeight: FontWeight.w800,
         letterSpacing: -0.7,
         color: AppColors.ink,
       ),
@@ -42,7 +42,7 @@ ThemeData buildTheme() {
         color: AppColors.ink,
       ),
       titleMedium: TextStyle(
-        fontWeight: FontWeight.w750,
+        fontWeight: FontWeight.w700,
         color: AppColors.ink,
       ),
       bodyLarge: TextStyle(height: 1.3, color: AppColors.ink),
