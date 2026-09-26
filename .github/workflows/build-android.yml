@@ -1,15 +1,18 @@
-name: Build DIGNI Scanner APK
+name: Build DIGNI Scanner V3 Preview
 
 on:
+  push:
+    branches:
+      - v3-preview
   workflow_dispatch:
 
 jobs:
-  build:
+  android-preview:
     runs-on: ubuntu-24.04
-
+    timeout-minutes: 35
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout V3 preview
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -17,113 +20,55 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate Android platform
+      - name: Generate Android project
         run: flutter create --platforms=android --org cl.digni --project-name digni_scanner .
 
-      - name: Brand Android shell and camera permission
+      - name: Configure Android camera and network permissions
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import struct, zlib
-
+          import re
           manifest = Path("android/app/src/main/AndroidManifest.xml")
-          text = manifest.read_text()
-
-          camera = '    <uses-permission android:name="android.permission.CAMERA"/>\n'
-          feature = '    <uses-feature android:name="android.hardware.camera" android:required="false"/>\n'
-
-          if "android.permission.CAMERA" not in text:
-              text = text.replace(">", ">\n" + camera + feature, 1)
-
-          text = text.replace('android:label="digni_scanner"', 'android:label="DIGNI Scanner"')
-          manifest.write_text(text)
-
-          # White native launch background.
-          for rel in [
-              "android/app/src/main/res/drawable/launch_background.xml",
-              "android/app/src/main/res/drawable-v21/launch_background.xml",
-          ]:
-              p = Path(rel)
-              if p.exists():
-                  p.write_text("""<?xml version="1.0" encoding="utf-8"?>
-          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-              <item android:drawable="@android:color/white" />
-          </layer-list>
-          """)
-
-          # Generate a simple branded launcher icon without external dependencies.
-          def png_bytes(size):
-              bg = (0, 140, 152, 255)
-              white = (255, 255, 255, 255)
-              rows = []
-              for y in range(size):
-                  row = bytearray()
-                  for x in range(size):
-                      px = bg
-                      # Stylized white D.
-                      left = size * 0.28
-                      top = size * 0.22
-                      bottom = size * 0.78
-                      right = size * 0.73
-                      stroke = size * 0.11
-
-                      in_vertical = left <= x <= left + stroke and top <= y <= bottom
-                      cx = left + stroke
-                      cy = size * 0.50
-                      rx = right - cx
-                      ry = (bottom - top) / 2
-                      outer = ((x-cx)/rx)**2 + ((y-cy)/ry)**2 <= 1.0 and x >= cx
-                      inner_rx = max(rx - stroke, 1)
-                      inner_ry = max(ry - stroke, 1)
-                      inner = ((x-cx)/inner_rx)**2 + ((y-cy)/inner_ry)**2 <= 1.0 and x >= cx
-                      curved = outer and not inner
-                      if in_vertical or curved:
-                          px = white
-
-                      row.extend(px)
-                  rows.append(b'\x00' + bytes(row))
-
-              raw = b''.join(rows)
-              def chunk(kind, data):
-                  return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
-
-              return (
-                  b'\x89PNG\r\n\x1a\n' +
-                  chunk(b'IHDR', struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
-                  chunk(b'IDAT', zlib.compress(raw, 9)) +
-                  chunk(b'IEND', b'')
-              )
-
-          sizes = {
-              "mipmap-mdpi": 48,
-              "mipmap-hdpi": 72,
-              "mipmap-xhdpi": 96,
-              "mipmap-xxhdpi": 144,
-              "mipmap-xxxhdpi": 192,
-          }
-
-          base = Path("android/app/src/main/res")
-          for folder, size in sizes.items():
-              target = base / folder / "ic_launcher.png"
-              target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(png_bytes(size))
+          contents = manifest.read_text()
+          requested = [
+              ('android.permission.CAMERA', '    <uses-permission android:name="android.permission.CAMERA"/>'),
+              ('android.permission.INTERNET', '    <uses-permission android:name="android.permission.INTERNET"/>'),
+          ]
+          additions = [element for name, element in requested if name not in contents]
+          if 'android.hardware.camera' not in contents:
+              additions.append('    <uses-feature android:name="android.hardware.camera" android:required="false"/>')
+          if additions:
+              match = re.search(r'<manifest\b[^>]*>', contents)
+              if not match:
+                  raise RuntimeError("Android manifest root not found")
+              contents = contents[:match.end()] + '\n' + '\n'.join(additions) + contents[match.end():]
+          contents = contents.replace('android:label="digni_scanner"', 'android:label="DIGNI Scanner Preview"')
+          manifest.write_text(contents)
+          assert 'android.permission.CAMERA' in contents
+          assert 'android.permission.INTERNET' in contents
+          build = Path("android/app/build.gradle.kts")
+          if build.exists():
+              body = build.read_text()
+              body = body.replace("minSdk = flutter.minSdkVersion", "minSdk = 23")
+              build.write_text(body)
           PY
 
       - name: Remove generated template test
         run: rm -rf test
 
-      - name: Dependencies
+      - name: Fetch dependencies
         run: flutter pub get
 
-      - name: Analyze
+      - name: Check Dart and Flutter code
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
-      - name: Build APK
-        run: flutter build apk --release
+      - name: Build installable internal QA APK
+        run: flutter build apk --debug --dart-define=DIGNI_PREVIEW=true
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: digni-scanner-v1.1.0
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: digni-scanner-v3-preview-qa
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
