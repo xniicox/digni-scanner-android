@@ -1,7 +1,7 @@
 name: digni_scanner
-description: DIGNI Scanner Android v1.1
+description: DIGNI Scanner V3 native preview (not connected to production)
 publish_to: "none"
-version: 1.1.0+2
+version: 3.0.0-preview.1+3
 
 environment:
   sdk: ">=3.7.0 <4.0.0"
@@ -9,10 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  cupertino_icons: ^1.0.8
   mobile_scanner: ^7.4.2
-  permission_handler: ^12.0.1
-  flutter_svg: ^2.2.1
+  cupertino_icons: ^1.0.8
 
 dev_dependencies:
   flutter_test:
@@ -21,5 +19,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/digni_logo.svg
