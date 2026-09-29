@@ -14,14 +14,14 @@ import 'session_store.dart';
 const bool preview = bool.fromEnvironment('DIGNI_PREVIEW', defaultValue: false);
 const String apiBase = String.fromEnvironment('DIGNI_API_BASE', defaultValue: '');
 
-const teal = Color(0xFFDF002E); // DIGNI red
+const brandRed = Color(0xFFDF002E); // DIGNI red
 const deep = Color(0xFFA4002F);
-const aqua = Color(0xFFF05A78);
+
 const space = Color(0xFF12242C);
 const spaceDark = Color(0xFF0D151A);
-const good = Color(0xFF129E65);
-const amber = Color(0xFFDB9119);
-const red = Color(0xFFDE4957);
+const good = Color(0xFF087F4F);
+const amber = Color(0xFF805600);
+const red = Color(0xFFB3261E);
 
 enum View { splash, login, events, own, external, scanner, result, people,
   captures, info, account }
@@ -78,10 +78,20 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Color get bg => dark ? spaceDark : const Color(0xFFF7F7F8);
   Color get surface => dark ? space : Colors.white;
-  Color get ink => dark ? const Color(0xFFF5FAFB) : const Color(0xFF18232A);
-  Color get muted => dark ? const Color(0xFFA9B8BE) : const Color(0xFF696969);
-  Color get border => dark ? const Color(0xFF2B3C44) : const Color(0xFFE7E7E9);
+  Color get ink => dark ? const Color(0xFFF7F7F7) : const Color(0xFF232323);
+  Color get muted => dark ? const Color(0xFFB8B8B8) : const Color(0xFF696969);
+  Color get border => dark ? const Color(0xFF484848) : const Color(0xFFE7E7E9);
   Color get tint => dark ? const Color(0xFF35141E) : const Color(0xFFFDE7EC);
+
+  Color get actionInk => dark ? Colors.white : brandRed;
+  Color statusInk(Color color) {
+    if (!dark) return color;
+    if (color == good) return const Color(0xFF45D697);
+    if (color == amber) return const Color(0xFFF4C15C);
+    if (color == red) return const Color(0xFFFFB4AB);
+    if (color == brandRed || color == deep) return Colors.white;
+    return color;
+  }
 
   @override
   void initState() {
@@ -477,7 +487,7 @@ class _DigniV3AppState extends State<DigniV3App> {
             height: 34,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: teal,
+              color: brandRed,
               borderRadius: BorderRadius.circular(11),
             ),
             child: const Text('D', style: TextStyle(
@@ -492,8 +502,8 @@ class _DigniV3AppState extends State<DigniV3App> {
     );
   }
 
-  Widget label(String value) => Text(value, style: const TextStyle(
-    color: teal, fontSize: 10, fontWeight: FontWeight.w800));
+  Widget label(String value) => Text(value, style: TextStyle(
+    color: actionInk, fontSize: 10, fontWeight: FontWeight.w800));
   Widget title(String value) => Text(value, style: TextStyle(color: ink,
     fontSize: 27, fontWeight: FontWeight.w900, letterSpacing: -.9));
   Widget sub(String value) => Text(value,
@@ -512,6 +522,18 @@ class _DigniV3AppState extends State<DigniV3App> {
     decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(99)),
     child: Text(value, style: TextStyle(color: fgColor,
       fontSize: 10, fontWeight: FontWeight.w800)));
+
+  Widget attendeeBadge(String value) {
+    final success = value == 'Ingresó' || value == 'Reingreso';
+    final cancelled = value == 'Anulada';
+    final foreground = success ? statusInk(good) : cancelled ? statusInk(red) : muted;
+    final background = success
+        ? (dark ? const Color(0xFF173B2C) : const Color(0xFFE1F7E9))
+        : cancelled
+            ? (dark ? const Color(0xFF4B211E) : const Color(0xFFFCEAE8))
+            : surface;
+    return badge(value, background, foreground);
+  }
 
   Widget logo(bool isOwn, {String? logoUrl}) {
     if (logoUrl != null && logoUrl.isNotEmpty) {
@@ -534,7 +556,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       height: 50,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: isOwn ? Colors.white : const Color(0xFFECEBFF),
+        color: isOwn ? Colors.white : const Color(0xFFF4F4F5),
         borderRadius: BorderRadius.circular(15),
       ),
       child: Text(
@@ -560,9 +582,9 @@ class _DigniV3AppState extends State<DigniV3App> {
     Widget drawerItem(IconData icon, String text, VoidCallback onTap,
         {Color? color}) {
       return ListTile(
-        leading: Icon(icon, color: color ?? muted),
+        leading: Icon(icon, color: color == null ? muted : statusInk(color)),
         title: Text(text, style: TextStyle(
-          color: color ?? ink, fontWeight: FontWeight.w700)),
+          color: color == null ? ink : statusInk(color), fontWeight: FontWeight.w700)),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         onTap: onTap,
       );
@@ -581,8 +603,8 @@ class _DigniV3AppState extends State<DigniV3App> {
               panel(Row(children: [
                 CircleAvatar(
                   backgroundColor: tint,
-                  child: const Text('NO', style: TextStyle(
-                    color: deep, fontSize: 11, fontWeight: FontWeight.w800)),
+                  child: Text('NO', style: TextStyle(
+                    color: actionInk, fontSize: 11, fontWeight: FontWeight.w800)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(child: Column(
@@ -747,11 +769,11 @@ class _DigniV3AppState extends State<DigniV3App> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Icon(item.$1, color:
-                                        active == item.$2 ? teal : muted),
+                                        active == item.$2 ? actionInk : muted),
                                     const SizedBox(height: 4),
                                     Text(item.$2, style: TextStyle(
                                       fontSize: 10,
-                                      color: active == item.$2 ? teal : muted)),
+                                      color: active == item.$2 ? actionInk : muted)),
                                   ],
                                 ),
                               ),
@@ -766,7 +788,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   Widget splash() => Scaffold(
-    backgroundColor: const Color(0xFFB80036),
+    backgroundColor: const Color(0xFFDF002E),
     body: SafeArea(
       child: Center(
         child: TweenAnimationBuilder<double>(
@@ -790,7 +812,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                   width: 164,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFB80036),
+                    color: const Color(0xFFDF002E),
                     borderRadius: BorderRadius.circular(46),
                   ),
                   child: const Text('DIGNI', style: TextStyle(
@@ -833,7 +855,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           counterText: '', prefixIcon: Icon(Icons.lock_outline_rounded))),
       if (message.isNotEmpty) Padding(
         padding: const EdgeInsets.only(bottom: 12),
-        child: Text(message, style: const TextStyle(color: red, fontSize: 12))),
+        child: Text(message, style: TextStyle(color: statusInk(red), fontSize: 12))),
       const SizedBox(height: 9),
       FilledButton(onPressed: busy ? null : authenticate,
         child: busy ? const SizedBox(width: 20, height: 20,
@@ -865,8 +887,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           ]))]),
       const SizedBox(height: 18),
       badge(isOwn ? 'CONTROL DE ACCESOS' : 'CAPTACIÓN',
-        isOwn ? const Color(0xFFE1F7E9) : tint,
-        isOwn ? good : teal),
+        tint, actionInk),
       const SizedBox(height: 18),
       sub(isOwn ? '10 dic · 08:30 a 17:00'
         : '15–18 oct · Parque Bicentenario'),
@@ -899,8 +920,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         const SizedBox(height: 18),
         badge(
           event.isOwned ? 'CONTROL DE ACCESOS' : 'CAPTACIÓN',
-          event.isOwned ? const Color(0xFFE1F7E9) : tint,
-          event.isOwned ? good : teal,
+          tint, actionInk,
         ),
         if (event.dateLabel.isNotEmpty) ...[
           const SizedBox(height: 18),
@@ -963,7 +983,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         Row(children: [
           logo(true, logoUrl: selectedEvent?.logoUrl),
           const SizedBox(width: 12),
-          badge('JORNADA ABIERTA', const Color(0xFFE1F7E9), good),
+          badge('JORNADA ABIERTA', const Color(0xFFF4F4F5), const Color(0xFF232323)),
         ]),
         const SizedBox(height: 27),
         Text(titleText, style: const TextStyle(
@@ -974,7 +994,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           preview ? '10 dic · 08:30 – 17:00' : selectedEvent?.dateLabel ?? '',
           style: const TextStyle(color: Colors.white, fontSize: 12)),
         const SizedBox(height: 11),
-        const Divider(color: Color(0xFFEE728A)),
+        const Divider(color: Color(0xFF696969)),
       ]), color: space),
       const SizedBox(height: 16),
       Row(children: [
@@ -1050,7 +1070,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       ),
       const SizedBox(height: 17),
       panel(Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Icon(Icons.shield_outlined, color: teal),
+        Icon(Icons.shield_outlined, color: actionInk),
         const SizedBox(width: 11),
         Expanded(child: Text(
           'Solo captación e información. Este evento no permite validar '
@@ -1126,7 +1146,7 @@ class _DigniV3AppState extends State<DigniV3App> {
             padding: EdgeInsets.all(8),
             child: Text(
               'PREVIEW · NO SON ENTRADAS REALES',
-              style: TextStyle(color: Colors.amber, fontSize: 10),
+              style: TextStyle(color: Color(0xFFF4C15C), fontSize: 10),
             ),
           ),
         Expanded(
@@ -1145,7 +1165,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                   }
                 },
                 errorBuilder: (_, error) => Container(
-                  color: const Color(0xFF182C34),
+                  color: const Color(0xFF12242C),
                   alignment: Alignment.center,
                   padding: const EdgeInsets.all(23),
                   child: const Text(
@@ -1223,10 +1243,10 @@ class _DigniV3AppState extends State<DigniV3App> {
       ],
       if (r.supervisor) ...[
         const SizedBox(height: 14),
-        panel(const Row(
+        panel(Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.admin_panel_settings_outlined, color: amber),
+            Icon(Icons.admin_panel_settings_outlined, color: statusInk(amber)),
             SizedBox(width: 10),
             Expanded(child: Text(
               'La decisión debe quedar a cargo de un supervisor autorizado.')),
@@ -1274,7 +1294,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                           radius: 18,
                           backgroundColor: entries[index].$4.withValues(alpha: .14),
                           child: Icon(entries[index].$1,
-                              color: entries[index].$4, size: 19),
+                              color: statusInk(entries[index].$4), size: 19),
                         ),
                         if (index != entries.length - 1)
                           Container(width: 2, height: 34, color: border),
@@ -1312,7 +1332,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         Icons.confirmation_number_outlined,
         'Entrada emitida',
         'Registro habilitado para el evento',
-        teal,
+        brandRed,
       ),
     ];
     if (state == 'Ingresó' || state == 'Reingreso') {
@@ -1327,7 +1347,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           Icons.replay_rounded,
           'Reingreso registrado',
           '10:41 · Operador DIGNI',
-          teal,
+          brandRed,
         ));
       }
     } else {
@@ -1335,7 +1355,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         Icons.schedule_rounded,
         'Sin ingreso registrado',
         'La entrada continúa pendiente',
-        amber,
+        muted,
       ));
     }
     await _historySheet(
@@ -1357,8 +1377,11 @@ class _DigniV3AppState extends State<DigniV3App> {
         final outcome = (item['outcome'] ?? '').toString();
         final created = (item['created_at'] ?? '').toString();
         var icon = Icons.history_rounded;
-        var color = teal;
-        if (action == 'checkin') {
+        var color = brandRed;
+        if (outcome.contains('denied') || outcome.contains('reject')) {
+          icon = Icons.block_rounded;
+          color = red;
+        } else if (action == 'checkin') {
           icon = Icons.login_rounded;
           color = good;
         } else if (action == 'reentry') {
@@ -1384,7 +1407,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                   Icons.schedule_rounded,
                   'Sin movimientos registrados',
                   'No hay ingresos ni reingresos en el historial',
-                  amber,
+                  muted,
                 ),
               ]
             : entries,
@@ -1457,7 +1480,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                               backgroundColor: tint,
                               child: Text(person.$1.substring(0, 1),
                                 style: const TextStyle(
-                                  color: teal, fontWeight: FontWeight.w800)),
+                                  color: actionInk, fontWeight: FontWeight.w800)),
                             ),
                             const SizedBox(width: 13),
                             Expanded(child: Column(
@@ -1469,7 +1492,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                                 sub('RUT ${person.$2}'),
                               ],
                             )),
-                            badge(person.$3, tint, teal),
+                            attendeeBadge(person.$3),
                             const SizedBox(width: 3),
                             Icon(Icons.chevron_right_rounded, color: muted),
                           ])),
@@ -1496,7 +1519,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                               child: Text(
                                 person.name.isEmpty ? '?' : person.name[0].toUpperCase(),
                                 style: const TextStyle(
-                                  color: teal, fontWeight: FontWeight.w800)),
+                                  color: actionInk, fontWeight: FontWeight.w800)),
                             ),
                             const SizedBox(width: 13),
                             Expanded(child: Column(
@@ -1508,7 +1531,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                                 sub('RUT ${person.maskedRut}'),
                               ],
                             )),
-                            badge(_humanStatus(person.status), tint, teal),
+                            attendeeBadge(_humanStatus(person.status)),
                             const SizedBox(width: 3),
                             Icon(Icons.chevron_right_rounded, color: muted),
                           ])),
@@ -1583,7 +1606,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           Padding(
             padding: const EdgeInsets.only(bottom: 9),
             child: panel(Row(children: [
-              const Icon(Icons.person_outline, color: teal),
+              Icon(Icons.person_outline, color: actionInk),
               const SizedBox(width: 12),
               Expanded(child: Text(name, style: TextStyle(
                 color: ink, fontWeight: FontWeight.w800))),
@@ -1600,9 +1623,9 @@ class _DigniV3AppState extends State<DigniV3App> {
           Padding(
             padding: const EdgeInsets.only(bottom: 9),
             child: panel(Row(children: [
-              const CircleAvatar(
-                backgroundColor: Color(0xFFFDE7EC),
-                child: Icon(Icons.person_outline, color: teal),
+              CircleAvatar(
+                backgroundColor: const Color(0xFFFDE7EC),
+                child: Icon(Icons.person_outline, color: brandRed),
               ),
               const SizedBox(width: 12),
               Expanded(child: Text(
@@ -1634,7 +1657,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (!preview && selectedEvent?.location.isNotEmpty == true) ...[
       const SizedBox(height: 16),
       panel(Row(children: [
-        const Icon(Icons.location_on_outlined, color: teal),
+        Icon(Icons.location_on_outlined, color: actionInk),
         const SizedBox(width: 10),
         Expanded(child: Text(selectedEvent!.location)),
       ])),
@@ -1690,13 +1713,58 @@ class _DigniV3AppState extends State<DigniV3App> {
     final theme = ThemeData(useMaterial3: true,
       brightness: dark ? Brightness.dark : Brightness.light,
       scaffoldBackgroundColor: bg,
-      colorScheme: ColorScheme.fromSeed(seedColor: teal,
-        brightness: dark ? Brightness.dark : Brightness.light, surface: surface),
+      colorScheme: ColorScheme(
+        brightness: dark ? Brightness.dark : Brightness.light,
+        primary: brandRed, onPrimary: Colors.white,
+        primaryContainer: tint, onPrimaryContainer: actionInk,
+        secondary: actionInk, onSecondary: dark ? spaceDark : Colors.white,
+        secondaryContainer: tint, onSecondaryContainer: actionInk,
+        tertiary: muted, onTertiary: dark ? spaceDark : Colors.white,
+        tertiaryContainer: surface, onTertiaryContainer: ink,
+        error: statusInk(red), onError: dark ? spaceDark : Colors.white,
+        errorContainer: dark ? const Color(0xFF4B211E) : const Color(0xFFFCEAE8),
+        onErrorContainer: statusInk(red),
+        surface: surface, onSurface: ink, onSurfaceVariant: muted,
+        surfaceDim: bg, surfaceBright: surface,
+        surfaceContainerLowest: bg, surfaceContainerLow: surface,
+        surfaceContainer: surface, surfaceContainerHigh: surface,
+        surfaceContainerHighest: surface,
+        outline: muted, outlineVariant: border,
+        inverseSurface: dark ? Colors.white : spaceDark,
+        onInverseSurface: dark ? const Color(0xFF232323) : Colors.white,
+        inversePrimary: dark ? brandRed : Colors.white,
+        surfaceTint: Colors.transparent, shadow: Colors.black, scrim: Colors.black,
+      ),
+      textTheme: (dark ? ThemeData.dark() : ThemeData.light())
+          .textTheme.apply(bodyColor: ink, displayColor: ink),
+      iconTheme: IconThemeData(color: muted),
+      textButtonTheme: TextButtonThemeData(style: TextButton.styleFrom(
+        foregroundColor: actionInk)),
+      outlinedButtonTheme: OutlinedButtonThemeData(style: OutlinedButton.styleFrom(
+        foregroundColor: actionInk, side: BorderSide(color: muted))),
+      progressIndicatorTheme: ProgressIndicatorThemeData(color: actionInk),
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: actionInk, selectionColor: brandRed.withValues(alpha: .25),
+        selectionHandleColor: actionInk),
+      appBarTheme: AppBarTheme(backgroundColor: bg, foregroundColor: ink,
+        surfaceTintColor: Colors.transparent),
+      bottomSheetTheme: BottomSheetThemeData(backgroundColor: surface,
+        surfaceTintColor: Colors.transparent),
+      snackBarTheme: SnackBarThemeData(backgroundColor: spaceDark,
+        contentTextStyle: const TextStyle(color: Colors.white),
+        actionTextColor: Colors.white),
+      dividerTheme: DividerThemeData(color: border),
       filledButtonTheme: FilledButtonThemeData(style: FilledButton.styleFrom(
-        backgroundColor: teal, foregroundColor: Colors.white,
+        backgroundColor: brandRed, foregroundColor: Colors.white,
+        disabledBackgroundColor: dark ? const Color(0xFF484848) : const Color(0xFFE7E7E9),
+        disabledForegroundColor: muted,
         minimumSize: const Size.fromHeight(53),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)))),
       inputDecorationTheme: InputDecorationTheme(filled: true, fillColor: surface,
+        labelStyle: TextStyle(color: muted), hintStyle: TextStyle(color: muted),
+        prefixIconColor: muted, suffixIconColor: muted,
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide(color: actionInk, width: 2)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
         enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16),
