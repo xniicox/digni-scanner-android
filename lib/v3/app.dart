@@ -16,7 +16,9 @@ const String apiBase = String.fromEnvironment('DIGNI_API_BASE', defaultValue: ''
 
 const teal = Color(0xFFDF002E); // DIGNI red
 const deep = Color(0xFFA4002F);
-const aqua = Color(0xFFF05A78);\nconst space = Color(0xFF12242C);\nconst spaceDark = Color(0xFF0D151A);
+const aqua = Color(0xFFF05A78);
+const space = Color(0xFF12242C);
+const spaceDark = Color(0xFF0D151A);
 const good = Color(0xFF129E65);
 const amber = Color(0xFFDB9119);
 const red = Color(0xFFDE4957);
@@ -678,7 +680,7 @@ class _DigniV3AppState extends State<DigniV3App> {
             const Padding(
               padding: EdgeInsets.only(right: 16),
               child: CircleAvatar(
-                backgroundColor: Color(0xFFE3F5F3),
+                backgroundColor: Color(0xFFFDE7EC),
                 child: Text('NO', style: TextStyle(
                   color: deep, fontSize: 11, fontWeight: FontWeight.w800)),
               ),
@@ -1599,7 +1601,7 @@ class _DigniV3AppState extends State<DigniV3App> {
             padding: const EdgeInsets.only(bottom: 9),
             child: panel(Row(children: [
               const CircleAvatar(
-                backgroundColor: Color(0xFFE3F5F3),
+                backgroundColor: Color(0xFFFDE7EC),
                 child: Icon(Icons.person_outline, color: teal),
               ),
               const SizedBox(width: 12),
