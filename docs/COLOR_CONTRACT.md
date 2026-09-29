@@ -5,7 +5,7 @@ Deep brand: #A4002F. Dark canvas: #0D151A. Dark surface: #12242C.
 Light canvas: #F7F7F8. Light surface: #FFFFFF.
 Primary text: #232323 / #F7F7F7. Secondary text: #696969 / #B8B8B8.
 Small action/navigation labels: #DF002E in light mode, white in dark mode.
-Success indicator: #0CA73D; text #087F4F / #0CA73D on #E1F7E9 / #173B2C.
+Success indicator: #0CA73D; text #087A45 / #5BDD80 on #E1F7E9 / #173B2C.
 Warning indicator: #F9A700; text #805600 / #F9A700 on #FFF2D9 / #3D3017.
 Error indicator: #EB2217; text #B3261E / #FFB4AB on #FCEAE8 / #4B211E.
 Result circles use the exact indicator colors in both themes. Green/yellow circles use a Space Dark glyph; red uses white.

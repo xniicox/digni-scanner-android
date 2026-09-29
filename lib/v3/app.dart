@@ -86,12 +86,12 @@ class _DigniV3AppState extends State<DigniV3App> {
   Color get actionInk => dark ? Colors.white : brandRed;
   Color statusInk(Color color) {
     if (!dark) {
-      if (color == good) return const Color(0xFF087F4F);
+      if (color == good) return const Color(0xFF087A45);
       if (color == amber) return const Color(0xFF805600);
       if (color == red) return const Color(0xFFB3261E);
       return color;
     }
-    if (color == good) return good;
+    if (color == good) return const Color(0xFF5BDD80);
     if (color == amber) return amber;
     if (color == red) return const Color(0xFFFFB4AB);
     if (color == brandRed || color == deep) return Colors.white;
