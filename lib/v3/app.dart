@@ -27,11 +27,14 @@ enum Tone { good, warn, bad }
 
 class Decision {
   const Decision(this.tone, this.title, this.message,
-    {this.name, this.rut, this.reenter = false});
+    {this.name, this.rut, this.ticketId, this.reenter = false,
+      this.supervisor = false});
   final Tone tone;
   final String title, message;
   final String? name, rut;
+  final int? ticketId;
   final bool reenter;
+  final bool supervisor;
 }
 
 class DigniV3App extends StatefulWidget {
@@ -218,44 +221,235 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   void event(bool isOwned) {
-    setState(() => own = isOwned);
+    setState(() {
+      own = isOwned;
+      selectedEvent = null;
+      remoteSummary = const {};
+    });
     go(isOwned ? View.own : View.external);
   }
 
-  void check(String raw) {
-    if (!authed || !own || !preview || view != View.scanner) return;
+  Future<void> selectRemoteEvent(DigniEvent event) async {
+    setState(() {
+      selectedEvent = event;
+      own = event.isOwned;
+      busy = true;
+      remoteSummary = const {};
+    });
+    try {
+      if (api != null) {
+        remoteSummary = await api!.summary(event.id, journeyId: journeyId);
+      }
+    } catch (_) {
+      remoteSummary = const {};
+    }
+    if (!mounted) return;
+    setState(() => busy = false);
+    go(event.isOwned ? View.own : View.external);
+  }
+
+  Future<void> _loadPeople() async {
+    final event = selectedEvent;
+    final client = api;
+    if (preview || event == null || client == null || !event.isOwned) return;
+    try {
+      final items = await client.attendees(
+        event.id,
+        journeyId: journeyId,
+        query: search,
+      );
+      if (!mounted) return;
+      setState(() => remotePeople = items);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => message = 'No pudimos cargar la lista de asistentes.');
+    }
+  }
+
+  Future<void> _loadCaptures() async {
+    final event = selectedEvent;
+    final client = api;
+    if (preview || event == null || client == null || event.isOwned) return;
+    try {
+      final items = await client.captures(event.id, query: search);
+      if (!mounted) return;
+      setState(() => remoteCaptures = items);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => message = 'No pudimos cargar los contactos capturados.');
+    }
+  }
+
+  String _idempotencyKey(String deviceId) {
+    final random = Random.secure().nextInt(1 << 32).toRadixString(16);
+    return '$deviceId-${DateTime.now().microsecondsSinceEpoch}-$random';
+  }
+
+  Future<void> _scan(String raw) async {
+    if (!authed || !own || view != View.scanner || busy) return;
+
+    if (preview) {
+      _checkPreview(raw);
+      return;
+    }
+
+    final event = selectedEvent;
+    final client = api;
+    if (event == null || client == null || !event.isOwned) return;
+
+    setState(() => busy = true);
+    try {
+      final deviceId = await sessions.ensureDeviceId();
+      final validation = await client.validate(
+        eventId: event.id,
+        journeyId: journeyId,
+        code: raw,
+        deviceId: deviceId,
+      );
+      if (validation.outcome == 'valid' && validation.ticketId != null) {
+        final checked = await client.checkIn(
+          eventId: event.id,
+          journeyId: journeyId,
+          ticketId: validation.ticketId!,
+          deviceId: deviceId,
+          idempotencyKey: _idempotencyKey(deviceId),
+        );
+        await _showServerDecision(checked);
+      } else {
+        await _showServerDecision(validation);
+      }
+    } on DigniApiException catch (error) {
+      _showDecision(Decision(Tone.bad, 'No se pudo validar', error.message));
+    } catch (_) {
+      _showDecision(const Decision(
+        Tone.bad,
+        'Sin respuesta del servidor',
+        'No se registró ningún acceso. Revisa la conexión e intenta de nuevo.',
+      ));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  void _checkPreview(String raw) {
     final v = raw.trim().toUpperCase();
-    Decision result;
-    switch (v) {
-      case 'DEMO-OK':
-        result = used.add(v)
+    late final Decision result;
+    if (v == 'DEMO-OK') {
+      result = used.add(v)
           ? const Decision(Tone.good, 'Acceso autorizado',
               'Ingreso registrado en la simulación.',
-              name: 'Carolina Soto', rut: '19.***.**1-2')
+              name: 'Carolina Soto', rut: '19.***.**1-2', ticketId: 10001)
           : const Decision(Tone.warn, 'Entrada ya utilizada',
               'El primer ingreso ya figura en el preview.',
-              name: 'Carolina Soto', rut: '19.***.**1-2', reenter: true);
-      case 'DEMO-USED':
-        result = const Decision(Tone.warn, 'Entrada ya utilizada',
-          'Primer ingreso a las 10:32. Requiere confirmar el reingreso.',
-          name: 'Carolina Soto', rut: '19.***.**1-2', reenter: true);
-      case 'DEMO-OTHER':
-        result = const Decision(Tone.warn, 'Otra jornada',
-          'Corresponde a otra fecha. No se registró el ingreso.',
-          name: 'Carolina Soto', rut: '19.***.**1-2');
-      case 'DEMO-ID':
-        result = const Decision(Tone.warn, 'Verificar identidad',
-          'El documento no coincide. Requiere revisión de supervisor.',
-          name: 'Carolina Soto', rut: '19.***.**1-2');
-      default:
-        result = const Decision(Tone.bad, 'Entrada no encontrada',
-          'Favor verifique con soporte.');
+              name: 'Carolina Soto', rut: '19.***.**1-2',
+              ticketId: 10001, reenter: true);
+    } else if (v == 'DEMO-USED') {
+      result = const Decision(Tone.warn, 'Entrada ya utilizada',
+        'Primer ingreso a las 10:32. Requiere confirmar el reingreso.',
+        name: 'Carolina Soto', rut: '19.***.**1-2',
+        ticketId: 10001, reenter: true);
+    } else if (v == 'DEMO-OTHER') {
+      result = const Decision(Tone.warn, 'Otra jornada',
+        'Corresponde a otra fecha. No se registró el ingreso.',
+        name: 'Carolina Soto', rut: '19.***.**1-2', ticketId: 10001);
+    } else if (v == 'DEMO-ID') {
+      result = const Decision(Tone.warn, 'Verificar identidad',
+        'El documento no coincide. Requiere revisión de supervisor.',
+        name: 'Carolina Soto', rut: '19.***.**1-2',
+        ticketId: 10001, supervisor: true);
+    } else {
+      result = const Decision(Tone.bad, 'Entrada no encontrada',
+        'Favor verifique con soporte.');
     }
-    setState(() { decision = result; view = View.result; });
+    _showDecision(result);
+    if (result.tone == Tone.good) unawaited(_approvalFeedback());
+  }
+
+  Future<void> _showServerDecision(DigniValidation value) async {
+    var tone = Tone.bad;
+    if (value.outcome == 'approved' ||
+        value.outcome == 'checked_in' ||
+        value.outcome == 'reentry_approved') {
+      tone = Tone.good;
+    } else if (value.outcome == 'already_used' ||
+        value.outcome == 'other_journey' ||
+        value.outcome == 'identity_mismatch' ||
+        value.requiresSupervisor) {
+      tone = Tone.warn;
+    }
+
+    _showDecision(Decision(
+      tone,
+      value.title,
+      value.message,
+      name: value.name,
+      rut: value.maskedRut,
+      ticketId: value.ticketId,
+      reenter: value.canReenter,
+      supervisor: value.requiresSupervisor,
+    ));
+    if (tone == Tone.good) await _approvalFeedback();
+  }
+
+  void _showDecision(Decision result) {
+    setState(() {
+      decision = result;
+      view = View.result;
+    });
     if (result.tone == Tone.good) {
-      autoReturn = Timer(const Duration(milliseconds: 2800), () {
+      autoReturn = Timer(const Duration(milliseconds: 3000), () {
         if (mounted && view == View.result) go(View.own);
       });
+    }
+  }
+
+  Future<void> confirmReentry() async {
+    final current = decision;
+    if (current == null || !current.reenter || !own) return;
+
+    if (preview) {
+      _showDecision(Decision(
+        Tone.good,
+        'Reingreso autorizado',
+        'Reingreso simulado correctamente.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
+      await _approvalFeedback();
+      return;
+    }
+
+    final event = selectedEvent;
+    final client = api;
+    if (event == null || client == null || current.ticketId == null) return;
+
+    setState(() => busy = true);
+    try {
+      final deviceId = await sessions.ensureDeviceId();
+      final result = await client.checkIn(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        deviceId: deviceId,
+        idempotencyKey: _idempotencyKey(deviceId),
+        reentry: true,
+      );
+      await _showServerDecision(result);
+    } on DigniApiException catch (error) {
+      _showDecision(Decision(Tone.bad, 'No se pudo registrar', error.message));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _approvalFeedback() async {
+    await HapticFeedback.mediumImpact();
+    try {
+      await player.stop();
+      await player.play(AssetSource('sounds/check.wav'), volume: 0.9);
+    } catch (_) {
+      await SystemSound.play(SystemSoundType.click);
     }
   }
 
