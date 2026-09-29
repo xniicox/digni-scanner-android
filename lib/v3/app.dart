@@ -180,7 +180,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: 'Android',
-          appVersion: '3.0',
+          appVersion: '1.0.1',
         );
         remoteEvents = await client.events();
       }
