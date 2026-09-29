@@ -1,6 +1,9 @@
 name: Build DIGNI Scanner V3 Preview
 
 on:
+  push:
+    branches:
+      - v3-preview
   workflow_dispatch:
 
 jobs:
@@ -58,7 +61,7 @@ jobs:
         run: flutter pub get
 
       - name: Check Dart and Flutter code
-        run: flutter analyze lib/main.dart lib/v3/app.dart --no-fatal-infos --no-fatal-warnings
+        run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/session_store.dart --no-fatal-infos --no-fatal-warnings
 
       - name: Build installable internal QA APK
         run: flutter build apk --debug --dart-define=DIGNI_PREVIEW=true
