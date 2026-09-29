@@ -1242,74 +1242,376 @@ class _DigniV3AppState extends State<DigniV3App> {
     ]), back: true);
   }
 
+  Future<void> _historySheet({
+    required String personName,
+    required String rut,
+    required List<(IconData, String, String, Color)> entries,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(personName, style: Theme.of(sheetContext).textTheme.titleLarge),
+              const SizedBox(height: 5),
+              Text('RUT $rut', style: TextStyle(color: muted, fontSize: 12)),
+              const SizedBox(height: 22),
+              for (var index = 0; index < entries.length; index++)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Column(
+                      children: [
+                        CircleAvatar(
+                          radius: 18,
+                          backgroundColor: entries[index].$4.withValues(alpha: .14),
+                          child: Icon(entries[index].$1,
+                              color: entries[index].$4, size: 19),
+                        ),
+                        if (index != entries.length - 1)
+                          Container(width: 2, height: 34, color: border),
+                      ],
+                    ),
+                    const SizedBox(width: 13),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(entries[index].$2,
+                              style: TextStyle(
+                                color: ink, fontWeight: FontWeight.w800)),
+                            const SizedBox(height: 4),
+                            sub(entries[index].$3),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showDemoHistory(
+      String name, String rut, String state) async {
+    final entries = <(IconData, String, String, Color)>[
+      (
+        Icons.confirmation_number_outlined,
+        'Entrada emitida',
+        'Registro habilitado para el evento',
+        teal,
+      ),
+    ];
+    if (state == 'Ingresó' || state == 'Reingreso') {
+      entries.add((
+        Icons.login_rounded,
+        'Ingreso registrado',
+        state == 'Ingresó' ? '10:32 · Puerta principal' : '09:58 · Puerta principal',
+        good,
+      ));
+      if (state == 'Reingreso') {
+        entries.add((
+          Icons.replay_rounded,
+          'Reingreso registrado',
+          '10:41 · Operador DIGNI',
+          teal,
+        ));
+      }
+    } else {
+      entries.add((
+        Icons.schedule_rounded,
+        'Sin ingreso registrado',
+        'La entrada continúa pendiente',
+        amber,
+      ));
+    }
+    await _historySheet(
+      personName: name,
+      rut: rut,
+      entries: entries,
+    );
+  }
+
+  Future<void> _showRemoteHistory(DigniAttendee person) async {
+    final client = api;
+    if (client == null) return;
+    setState(() => busy = true);
+    try {
+      final history = await client.attendeeHistory(person.id);
+      if (!mounted) return;
+      final entries = history.map((item) {
+        final action = (item['action'] ?? 'event').toString();
+        final outcome = (item['outcome'] ?? '').toString();
+        final created = (item['created_at'] ?? '').toString();
+        var icon = Icons.history_rounded;
+        var color = teal;
+        if (action == 'checkin') {
+          icon = Icons.login_rounded;
+          color = good;
+        } else if (action == 'reentry') {
+          icon = Icons.replay_rounded;
+        } else if (outcome.contains('denied') ||
+            outcome.contains('reject')) {
+          icon = Icons.block_rounded;
+          color = red;
+        }
+        return (
+          icon,
+          (item['label'] ?? action).toString(),
+          created,
+          color,
+        );
+      }).toList();
+      await _historySheet(
+        personName: person.name,
+        rut: person.maskedRut,
+        entries: entries.isEmpty
+            ? <(IconData, String, String, Color)>[
+                (
+                  Icons.schedule_rounded,
+                  'Sin movimientos registrados',
+                  'No hay ingresos ni reingresos en el historial',
+                  amber,
+                ),
+              ]
+            : entries,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No pudimos cargar el historial.'),
+      ));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  String _humanStatus(String status) {
+    if (status == 'checked_in') return 'Ingresó';
+    if (status == 'reentry') return 'Reingreso';
+    if (status == 'cancelled') return 'Anulada';
+    return 'Pendiente';
+  }
+
   Widget people() {
-    final items = const <(String, String, String)>[
+    final demoItems = const <(String, String, String)>[
       ('Carolina Soto', '19.***.**1-2', 'Ingresó'),
       ('José Muñoz', '12.***.**8-9', 'Pendiente'),
       ('Ana Pérez', '20.***.**4-3', 'Pendiente'),
       ('Camila Vega', '17.***.**8-1', 'Reingreso'),
-    ].where((row) => row.$1.toLowerCase().contains(search.toLowerCase())
-      || row.$2.contains(search));
-    return shell(content([
-      title('Buscar asistente'), const SizedBox(height: 10),
-      sub('Consulta la inscripción y el historial.'),
-      const SizedBox(height: 19),
-      TextField(onChanged: (s) => setState(() => search = s),
-        decoration: const InputDecoration(hintText: 'Nombre o RUT',
-          prefixIcon: Icon(Icons.search_rounded))),
-      const SizedBox(height: 14),
-      for (final person in items)
-        Padding(padding: const EdgeInsets.only(bottom: 11),
-          child: panel(Row(children: [
-            CircleAvatar(backgroundColor: tint,
-              child: Text(person.$1.substring(0, 1), style:
-                const TextStyle(color: teal, fontWeight: FontWeight.w800))),
-            const SizedBox(width: 13),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-              children: [Text(person.$1, style: TextStyle(color: ink,
-                fontWeight: FontWeight.w800)),
-                const SizedBox(height: 5),
-                sub('RUT ' + person.$2)])),
-            badge(person.$3, tint, teal),
-          ]))),
-    ]), back: true, nav: true, active: 'Personas');
+    ].where((row) =>
+      row.$1.toLowerCase().contains(search.toLowerCase()) ||
+      row.$2.contains(search));
+
+    return shell(
+      Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              title('Buscar asistente'),
+              const SizedBox(height: 10),
+              sub('Toca una persona para revisar su historial.'),
+              const SizedBox(height: 19),
+              TextField(
+                onChanged: (value) {
+                  setState(() => search = value);
+                  if (!preview) unawaited(_loadPeople());
+                },
+                decoration: const InputDecoration(
+                  hintText: 'Nombre o RUT',
+                  prefixIcon: Icon(Icons.search_rounded),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            children: preview
+                ? [
+                    for (final person in demoItems)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 11),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(23),
+                          onTap: () => _showDemoHistory(
+                            person.$1, person.$2, person.$3),
+                          child: panel(Row(children: [
+                            CircleAvatar(
+                              backgroundColor: tint,
+                              child: Text(person.$1.substring(0, 1),
+                                style: const TextStyle(
+                                  color: teal, fontWeight: FontWeight.w800)),
+                            ),
+                            const SizedBox(width: 13),
+                            Expanded(child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(person.$1, style: TextStyle(
+                                  color: ink, fontWeight: FontWeight.w800)),
+                                const SizedBox(height: 5),
+                                sub('RUT ${person.$2}'),
+                              ],
+                            )),
+                            badge(person.$3, tint, teal),
+                            const SizedBox(width: 3),
+                            Icon(Icons.chevron_right_rounded, color: muted),
+                          ])),
+                        ),
+                      ),
+                  ]
+                : [
+                    if (busy)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 30),
+                        child: Center(child: CircularProgressIndicator()),
+                      ),
+                    if (!busy && remotePeople.isEmpty)
+                      panel(const Text('No hay asistentes para mostrar.')),
+                    for (final person in remotePeople)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 11),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(23),
+                          onTap: () => _showRemoteHistory(person),
+                          child: panel(Row(children: [
+                            CircleAvatar(
+                              backgroundColor: tint,
+                              child: Text(
+                                person.name.isEmpty ? '?' : person.name[0].toUpperCase(),
+                                style: const TextStyle(
+                                  color: teal, fontWeight: FontWeight.w800)),
+                            ),
+                            const SizedBox(width: 13),
+                            Expanded(child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(person.name, style: TextStyle(
+                                  color: ink, fontWeight: FontWeight.w800)),
+                                const SizedBox(height: 5),
+                                sub('RUT ${person.maskedRut}'),
+                              ],
+                            )),
+                            badge(_humanStatus(person.status), tint, teal),
+                            const SizedBox(width: 3),
+                            Icon(Icons.chevron_right_rounded, color: muted),
+                          ])),
+                        ),
+                      ),
+                  ],
+          ),
+        ),
+      ]),
+      back: true,
+      nav: true,
+      active: 'Personas',
+    );
   }
 
-  Widget captures() => shell(content([
-    title('Captación · Expo Jardines'), const SizedBox(height: 20),
-    panel(Row(children: [logo(false), const SizedBox(width: 13),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-        children: [Text('Expo Jardines',
-          style: TextStyle(color: ink, fontWeight: FontWeight.w800)),
-          sub('Makita · Participante')]))])),
-    const SizedBox(height: 16),
-    panel(const Column(crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('CONTACTOS REGISTRADOS',
-          style: TextStyle(color: Colors.white, fontSize: 10)),
-        SizedBox(height: 11),
-        Text('128', style: TextStyle(color: Colors.white,
-          fontSize: 47, fontWeight: FontWeight.w900)),
-        Text('Registros de esta activación',
-          style: TextStyle(color: Colors.white, fontSize: 11)),
-      ]), color: deep),
-    const SizedBox(height: 18),
-    TextField(onChanged: (s) => setState(() => search = s),
-      decoration: const InputDecoration(hintText: 'Buscar contactos',
-        prefixIcon: Icon(Icons.search_rounded))),
-    const SizedBox(height: 17),
-    label('ÚLTIMOS CONTACTOS'), const SizedBox(height: 13),
-    for (final name in const ['Carolina Soto','José Muñoz','Ana Pérez','Camila Vega'])
-      if (name.toLowerCase().contains(search.toLowerCase()))
-        Padding(padding: const EdgeInsets.only(bottom: 9),
-          child: panel(Row(children: [
-            const Icon(Icons.person_outline, color: teal),
-            const SizedBox(width: 12),
-            Expanded(child: Text(name, style: TextStyle(color: ink,
-              fontWeight: FontWeight.w800))),
-            sub('Capturado · Demo'),
-          ]))),
-  ]), back: true, nav: true, active: 'Captados');
+  Widget captures() {
+    final previewNames = const [
+      'Carolina Soto',
+      'José Muñoz',
+      'Ana Pérez',
+      'Camila Vega',
+    ].where((name) => name.toLowerCase().contains(search.toLowerCase()));
+
+    return shell(content([
+      title(preview
+          ? 'Captación · Expo Jardines'
+          : 'Captación · ${selectedEvent?.title ?? 'Evento'}'),
+      const SizedBox(height: 20),
+      panel(Row(children: [
+        logo(false, logoUrl: selectedEvent?.logoUrl),
+        const SizedBox(width: 13),
+        Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(preview ? 'Expo Jardines'
+                : selectedEvent?.title ?? 'Evento',
+              style: TextStyle(color: ink, fontWeight: FontWeight.w800)),
+            sub('Makita · Participante'),
+          ],
+        )),
+      ])),
+      const SizedBox(height: 16),
+      panel(Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('CONTACTOS REGISTRADOS',
+            style: TextStyle(color: Colors.white, fontSize: 10)),
+          const SizedBox(height: 11),
+          Text(preview ? '128' : '${remoteCaptures.length}',
+            style: const TextStyle(
+              color: Colors.white, fontSize: 47, fontWeight: FontWeight.w900)),
+          const Text('Registros de esta activación',
+            style: TextStyle(color: Colors.white, fontSize: 11)),
+        ],
+      ), color: deep),
+      const SizedBox(height: 18),
+      TextField(
+        onChanged: (value) {
+          setState(() => search = value);
+          if (!preview) unawaited(_loadCaptures());
+        },
+        decoration: const InputDecoration(
+          hintText: 'Buscar contactos',
+          prefixIcon: Icon(Icons.search_rounded),
+        ),
+      ),
+      const SizedBox(height: 17),
+      label('ÚLTIMOS CONTACTOS'),
+      const SizedBox(height: 13),
+      if (preview)
+        for (final name in previewNames)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 9),
+            child: panel(Row(children: [
+              const Icon(Icons.person_outline, color: teal),
+              const SizedBox(width: 12),
+              Expanded(child: Text(name, style: TextStyle(
+                color: ink, fontWeight: FontWeight.w800))),
+              sub('Capturado · Demo'),
+            ])),
+          )
+      else ...[
+        if (busy)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 25),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        for (final item in remoteCaptures)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 9),
+            child: panel(Row(children: [
+              const CircleAvatar(
+                backgroundColor: Color(0xFFE3F5F3),
+                child: Icon(Icons.person_outline, color: teal),
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: Text(
+                (item['name'] ?? '').toString(),
+                style: TextStyle(color: ink, fontWeight: FontWeight.w800))),
+              sub((item['created_at'] ?? '').toString()),
+            ])),
+          ),
+      ],
+    ]), back: true, nav: true, active: 'Captados');
+  }
 
   Widget info() => shell(content([
     title(own ? 'Power Tour Rescue' : 'Expo Jardines'),
