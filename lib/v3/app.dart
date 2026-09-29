@@ -19,9 +19,9 @@ const deep = Color(0xFFA4002F);
 
 const space = Color(0xFF12242C);
 const spaceDark = Color(0xFF0D151A);
-const good = Color(0xFF087F4F);
-const amber = Color(0xFF805600);
-const red = Color(0xFFB3261E);
+const good = Color(0xFF0CA73D);
+const amber = Color(0xFFF9A700);
+const red = Color(0xFFEB2217);
 
 enum View { splash, login, events, own, external, scanner, result, people,
   captures, info, account }
@@ -85,9 +85,14 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Color get actionInk => dark ? Colors.white : brandRed;
   Color statusInk(Color color) {
-    if (!dark) return color;
-    if (color == good) return const Color(0xFF45D697);
-    if (color == amber) return const Color(0xFFF4C15C);
+    if (!dark) {
+      if (color == good) return const Color(0xFF087F4F);
+      if (color == amber) return const Color(0xFF805600);
+      if (color == red) return const Color(0xFFB3261E);
+      return color;
+    }
+    if (color == good) return good;
+    if (color == amber) return amber;
     if (color == red) return const Color(0xFFFFB4AB);
     if (color == brandRed || color == deep) return Colors.white;
     return color;
@@ -724,7 +729,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                 fontSize: 9,
                 fontWeight: FontWeight.w800,
                 color: dark
-                    ? const Color(0xFFF4C15C)
+                    ? const Color(0xFFF9A700)
                     : const Color(0xFF9B6113),
               ),
             ),
@@ -1226,7 +1231,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           decoration: BoxDecoration(shape: BoxShape.circle,
             color: col.withValues(alpha: .19)),
           child: CircleAvatar(radius: 54, backgroundColor: col,
-            child: Icon(glyph, color: Colors.white, size: 53)))),
+            child: Icon(glyph, color: r.tone == Tone.bad ? Colors.white : spaceDark, size: 53)))),
       const SizedBox(height: 24),
       Center(child: title(r.title)), const SizedBox(height: 11),
       Center(child: sub(r.message)),
