@@ -1078,50 +1078,112 @@ class _DigniV3AppState extends State<DigniV3App> {
           ])
             ListTile(title: Text(item.$2), subtitle: Text(item.$1),
               trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: () { Navigator.of(ctx).pop(); check(item.$1); }),
+              onTap: () { Navigator.of(ctx).pop(); unawaited(_scan(item.$1)); }),
         ]))));
   }
 
-  Widget scanner() => Scaffold(backgroundColor: const Color(0xFF12242C),
-    appBar: AppBar(backgroundColor: const Color(0xFF12242C),
-      foregroundColor: Colors.white,
-      title: const Text('VALIDAR ACCESO',
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
-      leading: IconButton(icon: const Icon(Icons.close_rounded),
-        onPressed: () => go(View.own))),
-    body: SafeArea(child: Column(children: [
-      if (preview) const Padding(padding: EdgeInsets.all(8),
-        child: Text('PREVIEW · NO SON ENTRADAS REALES',
-          style: TextStyle(color: Colors.amber, fontSize: 10))),
-      Expanded(child: Padding(padding: const EdgeInsets.all(18),
-        child: ClipRRect(borderRadius: BorderRadius.circular(26),
-          child: MobileScanner(
-            onDetect: (capture) {
-              if (!preview || view != View.scanner || capture.barcodes.isEmpty) return;
-              final raw = capture.barcodes.first.rawValue;
-              if (raw != null) check(raw);
-            },
-            errorBuilder: (_, error) => Container(
-              color: const Color(0xFF243840),
-              alignment: Alignment.center,
-              padding: const EdgeInsets.all(23),
-              child: const Text('No se pudo abrir la cámara. Revisa los permisos '
-                'o utiliza los códigos de prueba.',
-                style: TextStyle(color: Colors.white),
-                textAlign: TextAlign.center)),
-          )))),
-      const Text('QR DIGNI / CÉDULA CHILENA',
-        style: TextStyle(color: Colors.white,
-          fontSize: 12, fontWeight: FontWeight.w800)),
-      const SizedBox(height: 8),
-      const Text('Alinea el código en el recuadro.',
-        style: TextStyle(color: Colors.white70, fontSize: 12)),
-      if (preview) Padding(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 23),
-        child: FilledButton.icon(onPressed: demoCodes,
-          icon: const Icon(Icons.science_outlined),
-          label: const Text('Probar resultados sin cámara'))),
-    ])));
+  Widget scanner() {
+    final scaffoldKey = GlobalKey<ScaffoldState>();
+    return Scaffold(
+      key: scaffoldKey,
+      backgroundColor: const Color(0xFF12242C),
+      drawer: _drawer(),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF12242C),
+        foregroundColor: Colors.white,
+        leading: IconButton(
+          icon: const Icon(Icons.close_rounded),
+          onPressed: () => go(View.own),
+        ),
+        title: brand(light: true, width: 108),
+        actions: [
+          if (busy)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            tooltip: 'Menú',
+            onPressed: () => scaffoldKey.currentState?.openDrawer(),
+            icon: const Icon(Icons.menu_rounded),
+          ),
+        ],
+      ),
+      body: SafeArea(child: Column(children: [
+        if (preview)
+          const Padding(
+            padding: EdgeInsets.all(8),
+            child: Text(
+              'PREVIEW · NO SON ENTRADAS REALES',
+              style: TextStyle(color: Colors.amber, fontSize: 10),
+            ),
+          ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: MobileScanner(
+                onDetect: (capture) {
+                  if (busy || view != View.scanner || capture.barcodes.isEmpty) {
+                    return;
+                  }
+                  final raw = capture.barcodes.first.rawValue;
+                  if (raw != null && raw.isNotEmpty) {
+                    unawaited(_scan(raw));
+                  }
+                },
+                errorBuilder: (_, error) => Container(
+                  color: const Color(0xFF243840),
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.all(23),
+                  child: const Text(
+                    'No se pudo abrir la cámara. Revisa el permiso e intenta '
+                    'nuevamente.',
+                    style: TextStyle(color: Colors.white),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const Text(
+          'QR DIGNI / CÉDULA CHILENA',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Alinea el código en el recuadro.',
+          style: TextStyle(color: Colors.white70, fontSize: 12),
+        ),
+        if (preview)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 23),
+            child: FilledButton.icon(
+              onPressed: demoCodes,
+              icon: const Icon(Icons.science_outlined),
+              label: const Text('Probar resultados sin cámara'),
+            ),
+          )
+        else
+          const SizedBox(height: 24),
+      ])),
+    );
+  }
 
   Widget resultView() {
     final r = decision;
@@ -1157,16 +1219,23 @@ class _DigniV3AppState extends State<DigniV3App> {
             style: TextStyle(color: ink, fontWeight: FontWeight.w800)),
         ])),
       ],
+      if (r.supervisor) ...[
+        const SizedBox(height: 14),
+        panel(const Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.admin_panel_settings_outlined, color: amber),
+            SizedBox(width: 10),
+            Expanded(child: Text(
+              'La decisión debe quedar a cargo de un supervisor autorizado.')),
+          ],
+        )),
+      ],
       const SizedBox(height: 21),
-      if (r.reenter) FilledButton(onPressed: () {
-        if (!preview || !own) return;
-        setState(() => decision = const Decision(Tone.good,
-          'Reingreso autorizado', 'Reingreso simulado correctamente.',
-          name: 'Carolina Soto', rut: '19.***.**1-2'));
-        autoReturn = Timer(const Duration(milliseconds: 2800), () {
-          if (mounted && view == View.result) go(View.own);
-        });
-      }, child: const Text('Confirmar reingreso')),
+      if (r.reenter) FilledButton(
+        onPressed: busy ? null : confirmReentry,
+        child: const Text('Confirmar reingreso'),
+      ),
       const SizedBox(height: 13),
       OutlinedButton(onPressed: () => go(View.own),
         child: const Text('Volver al panel')),
