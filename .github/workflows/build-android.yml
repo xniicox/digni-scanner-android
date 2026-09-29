@@ -1,9 +1,6 @@
 name: Build DIGNI Scanner V3 Preview
 
 on:
-  push:
-    branches:
-      - v3-preview
   workflow_dispatch:
 
 jobs:
