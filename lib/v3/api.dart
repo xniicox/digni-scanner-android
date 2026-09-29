@@ -183,9 +183,15 @@ class DigniApi {
     final encoded = body == null ? null : jsonEncode(body);
     switch (method) {
       case 'GET':
-        response = await client.get(uri, headers: headers).timeout(const Duration(seconds: 15));
+        response = await client
+            .get(uri, headers: headers)
+            .timeout(const Duration(seconds: 15));
+        break;
       case 'POST':
-        response = await client.post(uri, headers: headers, body: encoded).timeout(const Duration(seconds: 15));
+        response = await client
+            .post(uri, headers: headers, body: encoded)
+            .timeout(const Duration(seconds: 15));
+        break;
       default:
         throw ArgumentError('Unsupported method $method');
     }
