@@ -43,7 +43,7 @@ jobs:
               if not match:
                   raise RuntimeError("Android manifest root not found")
               contents = contents[:match.end()] + '\n' + '\n'.join(additions) + contents[match.end():]
-          contents = contents.replace('android:label="digni_scanner"', 'android:label="DIGNI Scanner Preview"')
+          contents = contents.replace('android:label="digni_scanner"', 'android:label="DIGNI SCANNER"')
           manifest.write_text(contents)
           assert 'android.permission.CAMERA' in contents
           assert 'android.permission.INTERNET' in contents
