@@ -14,9 +14,9 @@ import 'session_store.dart';
 const bool preview = bool.fromEnvironment('DIGNI_PREVIEW', defaultValue: false);
 const String apiBase = String.fromEnvironment('DIGNI_API_BASE', defaultValue: '');
 
-const teal = Color(0xFF008C98);
-const deep = Color(0xFF086874);
-const aqua = Color(0xFF57CFCB);
+const teal = Color(0xFFDF002E); // DIGNI red
+const deep = Color(0xFFA4002F);
+const aqua = Color(0xFFF05A78);\nconst space = Color(0xFF12242C);\nconst spaceDark = Color(0xFF0D151A);
 const good = Color(0xFF129E65);
 const amber = Color(0xFFDB9119);
 const red = Color(0xFFDE4957);
@@ -74,12 +74,12 @@ class _DigniV3AppState extends State<DigniV3App> {
     return int.tryParse(value?.toString() ?? '');
   }
 
-  Color get bg => dark ? const Color(0xFF10191E) : const Color(0xFFF5F8F9);
-  Color get surface => dark ? const Color(0xFF1B292F) : Colors.white;
+  Color get bg => dark ? spaceDark : const Color(0xFFF7F7F8);
+  Color get surface => dark ? space : Colors.white;
   Color get ink => dark ? const Color(0xFFF5FAFB) : const Color(0xFF18232A);
-  Color get muted => dark ? const Color(0xFFA4B7BF) : const Color(0xFF66767E);
-  Color get border => dark ? const Color(0xFF31434B) : const Color(0xFFE5ECEF);
-  Color get tint => dark ? const Color(0xFF193D40) : const Color(0xFFE3F5F3);
+  Color get muted => dark ? const Color(0xFFA9B8BE) : const Color(0xFF696969);
+  Color get border => dark ? const Color(0xFF2B3C44) : const Color(0xFFE7E7E9);
+  Color get tint => dark ? const Color(0xFF35141E) : const Color(0xFFFDE7EC);
 
   @override
   void initState() {
@@ -972,8 +972,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           preview ? '10 dic · 08:30 – 17:00' : selectedEvent?.dateLabel ?? '',
           style: const TextStyle(color: Colors.white, fontSize: 12)),
         const SizedBox(height: 11),
-        const Divider(color: Color(0xFF75B8BA)),
-      ]), color: deep),
+        const Divider(color: Color(0xFFEE728A)),
+      ]), color: space),
       const SizedBox(height: 16),
       Row(children: [
         metric('$ingress', 'Ingresados'),
@@ -1030,8 +1030,8 @@ class _DigniV3AppState extends State<DigniV3App> {
               : selectedEvent?.dateLabel ?? '',
           style: const TextStyle(color: Colors.white, fontSize: 12)),
         const SizedBox(height: 18),
-        badge('EVENTO EXTERNO', const Color(0xFFE3F5F3), deep),
-      ]), color: deep),
+        badge('EVENTO EXTERNO', const Color(0xFFFDE7EC), deep),
+      ]), color: space),
       const SizedBox(height: 17),
       InkWell(
         onTap: () => go(View.captures),
@@ -1143,7 +1143,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                   }
                 },
                 errorBuilder: (_, error) => Container(
-                  color: const Color(0xFF243840),
+                  color: const Color(0xFF182C34),
                   alignment: Alignment.center,
                   padding: const EdgeInsets.all(23),
                   child: const Text(
