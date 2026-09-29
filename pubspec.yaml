@@ -1,7 +1,7 @@
 name: digni_scanner
-description: DIGNI Scanner V3 Android
+description: DIGNI SCANNER by DIGNI - MCL
 publish_to: "none"
-version: 3.0.0-preview.2+4
+version: 1.0.1+101
 
 environment:
   sdk: ">=3.7.0 <4.0.0"
