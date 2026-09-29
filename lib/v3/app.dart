@@ -1484,7 +1484,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                             CircleAvatar(
                               backgroundColor: tint,
                               child: Text(person.$1.substring(0, 1),
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: actionInk, fontWeight: FontWeight.w800)),
                             ),
                             const SizedBox(width: 13),
@@ -1523,7 +1523,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                               backgroundColor: tint,
                               child: Text(
                                 person.name.isEmpty ? '?' : person.name[0].toUpperCase(),
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: actionInk, fontWeight: FontWeight.w800)),
                             ),
                             const SizedBox(width: 13),
