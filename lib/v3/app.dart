@@ -1614,30 +1614,60 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   Widget info() => shell(content([
-    title(own ? 'Power Tour Rescue' : 'Expo Jardines'),
+    title(preview
+        ? (own ? 'Power Tour Rescue' : 'Expo Jardines')
+        : selectedEvent?.title ?? 'Evento'),
     const SizedBox(height: 18),
-    panel(Row(children: [logo(own), const SizedBox(width: 14),
-      Expanded(child: Text(own ? 'Evento propio · Makita Chile'
-        : 'Marca participante · Makita Chile'))])),
+    panel(Row(children: [
+      logo(own, logoUrl: selectedEvent?.logoUrl),
+      const SizedBox(width: 14),
+      Expanded(child: Text(own
+          ? 'Evento propio · Makita Chile'
+          : 'Marca participante · Makita Chile')),
+    ])),
     const SizedBox(height: 16),
-    panel(Text(own ? 'Control de accesos disponible.'
-      : 'Solo información y captación. Sin acceso a entradas de terceros.')),
+    panel(Text(own
+        ? 'Control de accesos habilitado para operadores autorizados.'
+        : 'Solo información y captación. Sin acceso a entradas de terceros.')),
+    if (!preview && selectedEvent?.location.isNotEmpty == true) ...[
+      const SizedBox(height: 16),
+      panel(Row(children: [
+        const Icon(Icons.location_on_outlined, color: teal),
+        const SizedBox(width: 10),
+        Expanded(child: Text(selectedEvent!.location)),
+      ])),
+    ],
   ]), back: true, nav: true, active: 'Evento');
 
   Widget account() => shell(content([
-    title('Mi cuenta'), const SizedBox(height: 20),
-    panel(const Column(crossAxisAlignment: CrossAxisAlignment.start,
-      children: [Text('Operador DIGNI'), SizedBox(height: 8),
-        Text('demo@digni.cl'), SizedBox(height: 15),
-        Text('Makita Chile')])),
+    title('Mi cuenta'),
+    const SizedBox(height: 20),
+    panel(Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Operador DIGNI',
+          style: TextStyle(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        Text(preview
+            ? 'demo@digni.cl'
+            : (email.text.trim().isEmpty ? 'Sesión activa' : email.text.trim())),
+        const SizedBox(height: 15),
+        const Text('Makita Chile'),
+        const SizedBox(height: 10),
+        sub('La sesión permanece activa mientras el token o su renovación '
+            'sigan autorizados.'),
+      ],
+    )),
     const SizedBox(height: 16),
-    FilledButton.tonal(onPressed: () => setState(() => dark = !dark),
-      child: Text(dark ? 'Modo claro' : 'Modo oscuro')),
+    FilledButton.tonal(
+      onPressed: () => setState(() => dark = !dark),
+      child: Text(dark ? 'Modo claro' : 'Modo oscuro'),
+    ),
     const SizedBox(height: 11),
-    OutlinedButton(onPressed: () {
-      setState(() { authed = false; used.clear(); pin.clear(); });
-      go(View.login);
-    }, child: const Text('Cerrar sesión')),
+    OutlinedButton(
+      onPressed: busy ? null : logout,
+      child: const Text('Cerrar sesión'),
+    ),
   ]), back: true);
 
   @override
