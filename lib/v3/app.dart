@@ -841,10 +841,11 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (preview) ...[
       const SizedBox(height: 20),
       panel(const Text('PREVIEW: demo@digni.cl · PIN 123456. '
-        'No conecta ni modifica WordPress.')),
+        'La sesión se mantiene 30 minutos aunque cierres la app.')),
     ] else ...[
       const SizedBox(height: 20),
-      panel(const Text('La autenticación requiere la API de WordPress validada.')),
+      panel(const Text('La sesión se guarda de forma segura y se renueva '
+        'mientras el dispositivo siga autorizado.')),
     ],
   ]));
 
@@ -873,11 +874,61 @@ class _DigniV3AppState extends State<DigniV3App> {
     ])),
   );
 
+  Widget remoteEventCard(DigniEvent event) => Padding(
+    padding: const EdgeInsets.only(top: 14),
+    child: panel(Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          logo(event.isOwned, logoUrl: event.logoUrl),
+          const SizedBox(width: 12),
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(event.title, style: TextStyle(
+                color: ink, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 5),
+              sub(event.isOwned
+                  ? '${event.organizer} · Evento propio'
+                  : 'Makita · Marca participante'),
+            ],
+          )),
+        ]),
+        const SizedBox(height: 18),
+        badge(
+          event.isOwned ? 'CONTROL DE ACCESOS' : 'CAPTACIÓN',
+          event.isOwned ? const Color(0xFFE1F7E9) : tint,
+          event.isOwned ? good : teal,
+        ),
+        if (event.dateLabel.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          sub(event.dateLabel),
+        ],
+        if (event.location.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          sub(event.location),
+        ],
+        const SizedBox(height: 18),
+        FilledButton(
+          onPressed: () => selectRemoteEvent(event),
+          child: Text(event.isOwned ? 'Abrir jornada' : 'Ver captación'),
+        ),
+      ],
+    )),
+  );
+
   Widget events() => shell(content([
     const SizedBox(height: 19), label('EVENTOS DISPONIBLES'),
     const SizedBox(height: 12), title('¿Dónde estás hoy?'),
     const SizedBox(height: 8), sub('Selecciona un evento para continuar.'),
-    const SizedBox(height: 16), eventCard(true), eventCard(false),
+    const SizedBox(height: 16),
+    if (preview) ...[
+      eventCard(true),
+      eventCard(false),
+    ] else if (remoteEvents.isEmpty)
+      panel(const Text('No hay eventos disponibles para este operador.'))
+    else
+      for (final event in remoteEvents) remoteEventCard(event),
   ]));
 
   Widget metric(String count, String caption) => Expanded(child: panel(
@@ -888,78 +939,124 @@ class _DigniV3AppState extends State<DigniV3App> {
       Text(caption, style: TextStyle(color: muted, fontSize: 10)),
     ]), padding: const EdgeInsets.all(11)));
 
-  Widget ownDashboard() => shell(content([
-    label('MI JORNADA'), const SizedBox(height: 11),
-    title('Todo listo para recibir.'), const SizedBox(height: 25),
-    panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [logo(true), const SizedBox(width: 12),
-        badge('JORNADA ABIERTA', const Color(0xFFE1F7E9), good)]),
-      const SizedBox(height: 27),
-      const Text('Power Tour\nRescue Edition', style: TextStyle(
-        color: Colors.white, fontWeight: FontWeight.w900,
-        fontSize: 22, height: 1.3)),
-      const SizedBox(height: 21),
-      const Text('10 dic · 08:30 – 17:00',
-        style: TextStyle(color: Colors.white, fontSize: 12)),
-      const SizedBox(height: 11),
-      const Divider(color: Color(0xFF75B8BA)),
-    ]), color: deep),
-    const SizedBox(height: 16),
-    Row(children: [
-      metric((181 + used.length).toString(), 'Ingresados'),
-      const SizedBox(width: 8),
-      metric('350', 'Inscritos'),
-      const SizedBox(width: 8),
-      metric(((181 + used.length) / 350 * 100).toStringAsFixed(1).replaceAll('.', ',') + '%',
-        'Asistencia'),
-    ]),
-    const SizedBox(height: 15),
-    panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('12 reingresos', style: TextStyle(color: ink,
-        fontWeight: FontWeight.w800)),
-      const SizedBox(height: 6), sub('73 registrados por ti'),
-    ])),
-    const SizedBox(height: 21),
-    FilledButton.icon(onPressed: () => go(View.scanner),
-      icon: const Icon(Icons.qr_code_scanner_rounded),
-      label: const Text('Validar acceso')),
-  ]), nav: true, active: 'Inicio');
+  Widget ownDashboard() {
+    final titleText = preview
+        ? 'Power Tour\\nRescue Edition'
+        : selectedEvent?.title ?? 'Evento DIGNI';
+    final ingress = preview
+        ? 181 + used.length
+        : (remoteSummary['checked_in'] as num?)?.toInt() ?? 0;
+    final registered = preview
+        ? 350
+        : (remoteSummary['registered'] as num?)?.toInt() ?? 0;
+    final reentries = preview
+        ? 12
+        : (remoteSummary['reentries'] as num?)?.toInt() ?? 0;
+    final ratio = registered > 0 ? ingress / registered * 100 : 0.0;
 
-  Widget externalDashboard() => shell(content([
-    label('CAPTACIÓN EN TERRENO'), const SizedBox(height: 11),
-    title('Expo Jardines'), const SizedBox(height: 8),
-    sub('Makita participa en este evento.'), const SizedBox(height: 20),
-    panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [logo(false), const SizedBox(width: 12),
-        const Text('Expo Jardines', style: TextStyle(color: Colors.white,
-          fontWeight: FontWeight.w800, fontSize: 19))]),
+    return shell(content([
+      label('MI JORNADA'), const SizedBox(height: 11),
+      title('Todo listo para recibir.'), const SizedBox(height: 25),
+      panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          logo(true, logoUrl: selectedEvent?.logoUrl),
+          const SizedBox(width: 12),
+          badge('JORNADA ABIERTA', const Color(0xFFE1F7E9), good),
+        ]),
+        const SizedBox(height: 27),
+        Text(titleText, style: const TextStyle(
+          color: Colors.white, fontWeight: FontWeight.w900,
+          fontSize: 22, height: 1.3)),
+        const SizedBox(height: 21),
+        Text(
+          preview ? '10 dic · 08:30 – 17:00' : selectedEvent?.dateLabel ?? '',
+          style: const TextStyle(color: Colors.white, fontSize: 12)),
+        const SizedBox(height: 11),
+        const Divider(color: Color(0xFF75B8BA)),
+      ]), color: deep),
+      const SizedBox(height: 16),
+      Row(children: [
+        metric('$ingress', 'Ingresados'),
+        const SizedBox(width: 8),
+        metric('$registered', 'Inscritos'),
+        const SizedBox(width: 8),
+        metric('${ratio.toStringAsFixed(1).replaceAll('.', ',')}%', 'Asistencia'),
+      ]),
+      const SizedBox(height: 15),
+      panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('$reentries reingresos', style: TextStyle(
+          color: ink, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 6),
+        sub(preview
+            ? '73 registrados por ti'
+            : '${remoteSummary['operator_checkins'] ?? 0} registrados por ti'),
+      ])),
       const SizedBox(height: 21),
-      const Text('Parque Bicentenario · Vitacura',
-        style: TextStyle(color: Colors.white, fontSize: 12)),
-      const SizedBox(height: 12),
-      const Text('15–18 octubre 2026',
-        style: TextStyle(color: Colors.white, fontSize: 12)),
-      const SizedBox(height: 18),
-      badge('EVENTO EXTERNO', const Color(0xFFE3F5F3), deep),
-    ]), color: deep),
-    const SizedBox(height: 17),
-    InkWell(onTap: () => go(View.captures),
-      child: panel(Column(crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          sub('CONTACTOS CAPTURADOS'),
-          Text('128', style: TextStyle(color: ink,
-            fontSize: 50, fontWeight: FontWeight.w900)),
-          sub('Registros asociados a Makita'),
-        ]))),
-    const SizedBox(height: 17),
-    panel(Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Icon(Icons.shield_outlined, color: teal),
-      const SizedBox(width: 11),
-      Expanded(child: Text('Solo captación e información. Este evento '
-        'no tiene control de accesos de terceros.',
-        style: TextStyle(color: ink, height: 1.5))),
-    ]), color: tint),
-  ]), nav: true, active: 'Inicio');
+      FilledButton.icon(
+        onPressed: () => go(View.scanner),
+        icon: const Icon(Icons.qr_code_scanner_rounded),
+        label: const Text('Validar acceso'),
+      ),
+    ]), nav: true, active: 'Inicio');
+  }
+
+  Widget externalDashboard() {
+    final eventTitle = preview
+        ? 'Expo Jardines'
+        : selectedEvent?.title ?? 'Evento';
+    final captured = preview
+        ? 128
+        : (remoteSummary['captured'] as num?)?.toInt() ?? 0;
+
+    return shell(content([
+      label('CAPTACIÓN EN TERRENO'), const SizedBox(height: 11),
+      title(eventTitle), const SizedBox(height: 8),
+      sub('Makita participa en este evento.'), const SizedBox(height: 20),
+      panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          logo(false, logoUrl: selectedEvent?.logoUrl),
+          const SizedBox(width: 12),
+          Expanded(child: Text(eventTitle, style: const TextStyle(
+            color: Colors.white, fontWeight: FontWeight.w800, fontSize: 19))),
+        ]),
+        const SizedBox(height: 21),
+        Text(
+          preview ? 'Parque Bicentenario · Vitacura'
+              : selectedEvent?.location ?? '',
+          style: const TextStyle(color: Colors.white, fontSize: 12)),
+        const SizedBox(height: 12),
+        Text(
+          preview ? '15–18 octubre 2026'
+              : selectedEvent?.dateLabel ?? '',
+          style: const TextStyle(color: Colors.white, fontSize: 12)),
+        const SizedBox(height: 18),
+        badge('EVENTO EXTERNO', const Color(0xFFE3F5F3), deep),
+      ]), color: deep),
+      const SizedBox(height: 17),
+      InkWell(
+        onTap: () => go(View.captures),
+        borderRadius: BorderRadius.circular(23),
+        child: panel(Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            sub('CONTACTOS CAPTURADOS'),
+            Text('$captured', style: TextStyle(
+              color: ink, fontSize: 50, fontWeight: FontWeight.w900)),
+            sub('Registros asociados a Makita'),
+          ],
+        )),
+      ),
+      const SizedBox(height: 17),
+      panel(Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.shield_outlined, color: teal),
+        const SizedBox(width: 11),
+        Expanded(child: Text(
+          'Solo captación e información. Este evento no permite validar '
+          'entradas ni controlar accesos de terceros.',
+          style: TextStyle(color: ink, height: 1.5))),
+      ]), color: tint),
+    ]), nav: true, active: 'Inicio');
+  }
 
   void demoCodes() {
     if (!preview || !own) return;
