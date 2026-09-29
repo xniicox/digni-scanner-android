@@ -144,8 +144,8 @@ class _DigniV3AppState extends State<DigniV3App> {
   Future<void> authenticate() async {
     if (busy) return;
     final mail = email.text.trim().toLowerCase();
-    if (!RegExp(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$').hasMatch(mail) ||
-        !RegExp(r'^\\d{6}$').hasMatch(pin.text)) {
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(mail) ||
+        !RegExp(r'^\d{6}$').hasMatch(pin.text)) {
       setState(() =>
           message = 'Ingresa un correo válido y un PIN de seis dígitos.');
       return;
