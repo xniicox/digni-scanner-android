@@ -132,7 +132,13 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (!authed && next != View.login && next != View.splash) next = View.login;
     if (!own && (next == View.scanner || next == View.people)) next = View.external;
     if (own && next == View.captures) next = View.own;
-    setState(() { view = next; message = ''; });
+    setState(() {
+      view = next;
+      message = '';
+      search = '';
+    });
+    if (!preview && next == View.people) unawaited(_loadPeople());
+    if (!preview && next == View.captures) unawaited(_loadCaptures());
   }
 
   Future<void> authenticate() async {
@@ -453,21 +459,36 @@ class _DigniV3AppState extends State<DigniV3App> {
     }
   }
 
-  Widget mark() => Container(width: 37, height: 37,
-    alignment: Alignment.center,
-    decoration: BoxDecoration(color: teal, borderRadius: BorderRadius.circular(12)),
-    child: const Text('D', style: TextStyle(
-      color: Colors.white, fontWeight: FontWeight.w900, fontSize: 27)));
-  Widget brand() => Row(mainAxisSize: MainAxisSize.min, children: [
-    mark(), const SizedBox(width: 10),
-    Column(crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min, children: [
-        Text('digni', style: TextStyle(color: ink, fontSize: 23,
-          fontWeight: FontWeight.w900, letterSpacing: -1)),
-        const Text('SCANNER', style: TextStyle(color: teal,
-          fontSize: 8, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
-      ]),
-  ]);
+  Widget brand({bool light = false, double width = 118}) {
+    final asset = light
+        ? 'assets/brand/DIGNI-BLANCO.png'
+        : 'assets/brand/DIGNI-NEGRO.png';
+    return Image.asset(
+      asset,
+      width: width,
+      fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: teal,
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Text('D', style: TextStyle(
+              color: Colors.white, fontSize: 25, fontWeight: FontWeight.w900)),
+          ),
+          const SizedBox(width: 8),
+          Text('DIGNI', style: TextStyle(
+            color: light ? Colors.white : ink,
+            fontSize: 19, fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
 
   Widget label(String value) => Text(value, style: const TextStyle(
     color: teal, fontSize: 10, fontWeight: FontWeight.w800));
@@ -490,90 +511,308 @@ class _DigniV3AppState extends State<DigniV3App> {
     child: Text(value, style: TextStyle(color: fgColor,
       fontSize: 10, fontWeight: FontWeight.w800)));
 
-  Widget logo(bool isOwn) => Container(width: 50, height: 50,
-    alignment: Alignment.center,
-    decoration: BoxDecoration(color: isOwn ? Colors.white
-      : const Color(0xFFECEBFF), borderRadius: BorderRadius.circular(15)),
-    child: Text(isOwn ? 'MAKITA' : 'EJ', style: TextStyle(
-      fontSize: isOwn ? 9 : 15, fontWeight: FontWeight.w900,
-      color: isOwn ? const Color(0xFFC6263B) : deep)));
+  Widget logo(bool isOwn, {String? logoUrl}) {
+    if (logoUrl != null && logoUrl.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(15),
+        child: Container(
+          width: 50,
+          height: 50,
+          color: Colors.white,
+          child: Image.network(
+            logoUrl,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => logo(isOwn),
+          ),
+        ),
+      );
+    }
+    return Container(
+      width: 50,
+      height: 50,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: isOwn ? Colors.white : const Color(0xFFECEBFF),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: Text(
+        isOwn ? 'MAKITA' : 'EVENTO',
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontSize: isOwn ? 9 : 8,
+          fontWeight: FontWeight.w900,
+          color: isOwn ? const Color(0xFFC6263B) : deep,
+        ),
+      ),
+    );
+  }
 
   Widget content(List<Widget> items) => ListView(
     padding: const EdgeInsets.fromLTRB(20, 18, 20, 26), children: items);
 
-  Widget shell(Widget body, {bool back = false, bool nav = false, String active = ''}) =>
-    Scaffold(
-      appBar: AppBar(automaticallyImplyLeading: false, titleSpacing: 20,
+  Widget _drawer() {
+    final eventTitle = preview
+        ? (own ? 'Power Tour Rescue' : 'Expo Jardines')
+        : selectedEvent?.title;
+
+    Widget drawerItem(IconData icon, String text, VoidCallback onTap,
+        {Color? color}) {
+      return ListTile(
+        leading: Icon(icon, color: color ?? muted),
+        title: Text(text, style: TextStyle(
+          color: color ?? ink, fontWeight: FontWeight.w700)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        onTap: onTap,
+      );
+    }
+
+    return Drawer(
+      backgroundColor: surface,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              brand(width: 142),
+              const SizedBox(height: 26),
+              panel(Row(children: [
+                CircleAvatar(
+                  backgroundColor: tint,
+                  child: const Text('NO', style: TextStyle(
+                    color: deep, fontSize: 11, fontWeight: FontWeight.w800)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Operador DIGNI', style: TextStyle(
+                      color: ink, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 4),
+                    sub('Makita Chile'),
+                  ],
+                )),
+              ])),
+              const SizedBox(height: 16),
+              drawerItem(Icons.event_outlined, 'Mis eventos', () {
+                Navigator.pop(context);
+                go(View.events);
+              }),
+              if (eventTitle != null)
+                drawerItem(Icons.home_outlined, eventTitle, () {
+                  Navigator.pop(context);
+                  go(own ? View.own : View.external);
+                }),
+              if (own)
+                drawerItem(Icons.people_outline, 'Asistentes', () {
+                  Navigator.pop(context);
+                  go(View.people);
+                }),
+              if (!own)
+                drawerItem(Icons.query_stats_rounded, 'Contactos capturados', () {
+                  Navigator.pop(context);
+                  go(View.captures);
+                }),
+              drawerItem(
+                dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
+                dark ? 'Modo claro' : 'Modo oscuro',
+                () {
+                  Navigator.pop(context);
+                  setState(() => dark = !dark);
+                },
+              ),
+              drawerItem(Icons.person_outline, 'Mi cuenta', () {
+                Navigator.pop(context);
+                go(View.account);
+              }),
+              const Spacer(),
+              const Divider(),
+              drawerItem(Icons.logout_rounded, 'Cerrar sesión', () {
+                Navigator.pop(context);
+                unawaited(logout());
+              }, color: red),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget shell(Widget body,
+      {bool back = false, bool nav = false, String active = ''}) {
+    final scaffoldKey = GlobalKey<ScaffoldState>();
+    return Scaffold(
+      key: scaffoldKey,
+      drawer: authed ? _drawer() : null,
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        titleSpacing: 12,
         backgroundColor: bg,
-        title: back
-          ? IconButton(onPressed: () => go(own ? View.own : View.external),
-              icon: const Icon(Icons.arrow_back_rounded))
-          : brand(),
+        leading: authed
+            ? IconButton(
+                tooltip: back ? 'Volver' : 'Menú',
+                onPressed: back
+                    ? () => go(own ? View.own : View.external)
+                    : () => scaffoldKey.currentState?.openDrawer(),
+                icon: Icon(back
+                    ? Icons.arrow_back_rounded
+                    : Icons.menu_rounded),
+              )
+            : null,
+        title: brand(width: 108),
         actions: [
-          IconButton(tooltip: 'Cambiar tema', onPressed: () =>
-            setState(() => dark = !dark),
-            icon: Icon(dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined)),
-          if (!back) const Padding(padding: EdgeInsets.only(right: 16),
-            child: CircleAvatar(backgroundColor: Color(0xFFE3F5F3),
-              child: Text('NO', style: TextStyle(color: deep,
-                fontSize: 11, fontWeight: FontWeight.w800)))),
-        ]),
+          IconButton(
+            tooltip: dark ? 'Modo claro' : 'Modo oscuro',
+            onPressed: () => setState(() => dark = !dark),
+            icon: Icon(dark
+                ? Icons.light_mode_outlined
+                : Icons.dark_mode_outlined),
+          ),
+          if (back && authed)
+            IconButton(
+              tooltip: 'Menú',
+              onPressed: () => scaffoldKey.currentState?.openDrawer(),
+              icon: const Icon(Icons.menu_rounded),
+            )
+          else if (authed)
+            const Padding(
+              padding: EdgeInsets.only(right: 16),
+              child: CircleAvatar(
+                backgroundColor: Color(0xFFE3F5F3),
+                child: Text('NO', style: TextStyle(
+                  color: deep, fontSize: 11, fontWeight: FontWeight.w800)),
+              ),
+            ),
+        ],
+      ),
       body: SafeArea(child: Column(children: [
-        if (preview) Container(width: double.infinity,
-          color: dark ? const Color(0xFF504126) : const Color(0xFFFFF2D9),
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          child: Text('PREVIEW · DATOS FICTICIOS · SIN INGRESOS REALES',
-            textAlign: TextAlign.center, style: TextStyle(
-              fontSize: 9, fontWeight: FontWeight.w800,
-              color: dark ? const Color(0xFFF4C15C) : const Color(0xFF9B6113)))),
+        if (preview)
+          Container(
+            width: double.infinity,
+            color: dark
+                ? const Color(0xFF504126)
+                : const Color(0xFFFFF2D9),
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            child: Text(
+              'PREVIEW · DATOS FICTICIOS · SIN INGRESOS REALES',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.w800,
+                color: dark
+                    ? const Color(0xFFF4C15C)
+                    : const Color(0xFF9B6113),
+              ),
+            ),
+          ),
         Expanded(child: body),
       ])),
-      bottomNavigationBar: nav ? SafeArea(top: false, child: Padding(
-        padding: const EdgeInsets.fromLTRB(15, 0, 15, 12),
-        child: Container(padding: const EdgeInsets.all(5),
-          decoration: BoxDecoration(color: surface,
-            border: Border.all(color: border), borderRadius: BorderRadius.circular(23)),
-          child: Row(children: (own
-            ? <(IconData, String, View)>[
-                (Icons.home_outlined, 'Inicio', View.own),
-                (Icons.qr_code_scanner_rounded, 'Escanear', View.scanner),
-                (Icons.people_outline, 'Personas', View.people)]
-            : <(IconData, String, View)>[
-                (Icons.home_outlined, 'Inicio', View.external),
-                (Icons.query_stats_rounded, 'Captados', View.captures),
-                (Icons.event_outlined, 'Evento', View.info)]).map((item) =>
-              Expanded(child: TextButton(
-                onPressed: () => go(item.$3),
-                style: TextButton.styleFrom(
-                  backgroundColor: active == item.$2 ? tint : Colors.transparent,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(15))),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(item.$1, color: active == item.$2 ? teal : muted),
-                  const SizedBox(height: 4),
-                  Text(item.$2, style: TextStyle(
-                    fontSize: 10, color: active == item.$2 ? teal : muted)),
-                ]),
-              ))).toList()),
-        ))) : null,
+      bottomNavigationBar: nav
+          ? SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(15, 0, 15, 12),
+                child: Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: surface,
+                    border: Border.all(color: border),
+                    borderRadius: BorderRadius.circular(23),
+                  ),
+                  child: Row(
+                    children: (own
+                            ? <(IconData, String, View)>[
+                                (Icons.home_outlined, 'Inicio', View.own),
+                                (Icons.qr_code_scanner_rounded, 'Escanear', View.scanner),
+                                (Icons.people_outline, 'Personas', View.people),
+                              ]
+                            : <(IconData, String, View)>[
+                                (Icons.home_outlined, 'Inicio', View.external),
+                                (Icons.query_stats_rounded, 'Captados', View.captures),
+                                (Icons.event_outlined, 'Evento', View.info),
+                              ])
+                        .map((item) => Expanded(
+                              child: TextButton(
+                                onPressed: () => go(item.$3),
+                                style: TextButton.styleFrom(
+                                  backgroundColor:
+                                      active == item.$2 ? tint : Colors.transparent,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(item.$1, color:
+                                        active == item.$2 ? teal : muted),
+                                    const SizedBox(height: 4),
+                                    Text(item.$2, style: TextStyle(
+                                      fontSize: 10,
+                                      color: active == item.$2 ? teal : muted)),
+                                  ],
+                                ),
+                              ),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              ),
+            )
+          : null,
     );
+  }
 
-  Widget splash() => Scaffold(body: Center(child: TweenAnimationBuilder<double>(
-    tween: Tween(begin: .76, end: 1), duration: const Duration(milliseconds: 950),
-    curve: Curves.easeOutBack,
-    builder: (_, factor, child) => Transform.scale(scale: factor, child: child),
-    child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(height: 153, width: 153, alignment: Alignment.center,
-        decoration: BoxDecoration(color: teal,
-          borderRadius: BorderRadius.circular(49)),
-        child: const Text('D', style: TextStyle(
-          color: Colors.white, fontSize: 108, fontWeight: FontWeight.w900))),
-      const SizedBox(height: 25),
-      title('digni'), label('S C A N N E R'),
-      const SizedBox(height: 80),
-      const SizedBox(width: 110, child: LinearProgressIndicator(minHeight: 3)),
-    ]),
-  )));
+  Widget splash() => Scaffold(
+    backgroundColor: const Color(0xFFB80036),
+    body: SafeArea(
+      child: Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween(begin: .72, end: 1),
+          duration: const Duration(milliseconds: 950),
+          curve: Curves.easeOutBack,
+          builder: (_, factor, child) => Opacity(
+            opacity: factor.clamp(0, 1),
+            child: Transform.scale(scale: factor, child: child),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset(
+                'assets/brand/icono-digni.png',
+                width: 188,
+                height: 188,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => Container(
+                  height: 164,
+                  width: 164,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFB80036),
+                    borderRadius: BorderRadius.circular(46),
+                  ),
+                  child: const Text('DIGNI', style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 33,
+                    fontWeight: FontWeight.w900,
+                  )),
+                ),
+              ),
+              const SizedBox(height: 68),
+              const SizedBox(
+                width: 106,
+                child: LinearProgressIndicator(
+                  minHeight: 3,
+                  color: Colors.white,
+                  backgroundColor: Color(0x44FFFFFF),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 
   Widget login() => shell(content([
     const SizedBox(height: 45), title('Qué bueno verte.'),
