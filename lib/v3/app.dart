@@ -1,6 +1,13 @@
 import 'dart:async';
+import 'dart:math';
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+
+import 'api.dart';
+import 'session_store.dart';
 
 // A preview binary is explicitly compiled with --dart-define=DIGNI_PREVIEW=true.
 // A production binary never accepts demo credentials or demo ticket codes.
@@ -34,13 +41,35 @@ class DigniV3App extends StatefulWidget {
 }
 
 class _DigniV3AppState extends State<DigniV3App> {
+  final SessionStore sessions = SessionStore();
+  final AudioPlayer player = AudioPlayer();
+  final email = TextEditingController();
+  final pin = TextEditingController();
+
+  late final DigniApi? api = apiBase.trim().isEmpty
+      ? null
+      : DigniApi(baseUrl: apiBase.trim(), sessions: sessions);
+
   View view = View.splash;
   bool dark = false, authed = false, own = true, busy = false;
   String message = '', search = '';
   Decision? decision;
   final used = <String>{};
-  final email = TextEditingController(), pin = TextEditingController();
   Timer? autoReturn;
+
+  List<DigniEvent> remoteEvents = const [];
+  DigniEvent? selectedEvent;
+  Map<String, dynamic> remoteSummary = const {};
+  List<DigniAttendee> remotePeople = const [];
+  List<Map<String, dynamic>> remoteCaptures = const [];
+
+  int? get journeyId {
+    final event = selectedEvent;
+    if (event == null || event.journeys.isEmpty) return null;
+    final value = event.journeys.first['id'];
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
 
   Color get bg => dark ? const Color(0xFF10191E) : const Color(0xFFF5F8F9);
   Color get surface => dark ? const Color(0xFF1B292F) : Colors.white;
@@ -52,13 +81,44 @@ class _DigniV3AppState extends State<DigniV3App> {
   @override
   void initState() {
     super.initState();
-    Future<void>.delayed(const Duration(milliseconds: 1400), () {
-      if (mounted && view == View.splash) go(View.login);
+    unawaited(_bootstrap());
+  }
+
+  Future<void> _bootstrap() async {
+    final splashDelay =
+        Future<void>.delayed(const Duration(milliseconds: 1200));
+    var restored = false;
+
+    if (preview) {
+      restored = await sessions.previewSessionValid();
+    } else if (api != null) {
+      if (await sessions.accessStillValid()) {
+        restored = true;
+      } else if (await sessions.refreshStillValid()) {
+        restored = await api!.refresh();
+      }
+      if (restored) {
+        try {
+          remoteEvents = await api!.events();
+        } catch (_) {
+          restored = false;
+          await sessions.clear();
+        }
+      }
+    }
+
+    await splashDelay;
+    if (!mounted) return;
+    setState(() {
+      authed = restored;
+      view = restored ? View.events : View.login;
     });
   }
+
   @override
   void dispose() {
     autoReturn?.cancel();
+    player.dispose();
     email.dispose();
     pin.dispose();
     super.dispose();
@@ -75,29 +135,86 @@ class _DigniV3AppState extends State<DigniV3App> {
   Future<void> authenticate() async {
     if (busy) return;
     final mail = email.text.trim().toLowerCase();
-    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(mail) ||
-        !RegExp(r'^\d{6}$').hasMatch(pin.text)) {
-      setState(() => message = 'Ingresa un correo válido y un PIN de seis dígitos.');
+    if (!RegExp(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$').hasMatch(mail) ||
+        !RegExp(r'^\\d{6}$').hasMatch(pin.text)) {
+      setState(() =>
+          message = 'Ingresa un correo válido y un PIN de seis dígitos.');
       return;
     }
-    setState(() => busy = true);
-    await Future<void>.delayed(const Duration(milliseconds: 350));
-    if (!mounted) return;
-    if (!preview) {
+
+    setState(() {
+      busy = true;
+      message = '';
+    });
+
+    try {
+      if (preview) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        if (mail != 'demo@digni.cl' || pin.text != '123456') {
+          throw DigniApiException('Credenciales de preview incorrectas.');
+        }
+        await sessions.savePreviewSession(
+          duration: const Duration(minutes: 30),
+        );
+      } else {
+        final client = api;
+        if (client == null) {
+          throw DigniApiException(
+            'Servidor DIGNI no configurado en esta compilación.',
+          );
+        }
+        final deviceId = await sessions.ensureDeviceId();
+        await client.login(
+          email: mail,
+          pin: pin.text,
+          deviceId: deviceId,
+          deviceName: 'Android',
+          appVersion: '3.0',
+        );
+        remoteEvents = await client.events();
+      }
+
+      if (!mounted) return;
+      setState(() {
+        authed = true;
+        busy = false;
+        view = View.events;
+      });
+    } on DigniApiException catch (error) {
+      if (!mounted) return;
       setState(() {
         busy = false;
-        message = apiBase.isEmpty
-          ? 'Servidor DIGNI no configurado.'
-          : 'La API de WordPress aún requiere integración y pruebas.';
+        message = error.message;
       });
-      return; // Do not fall back to a demo session.
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        busy = false;
+        message = 'No fue posible conectar con DIGNI. Intenta nuevamente.';
+      });
     }
-    if (mail != 'demo@digni.cl' || pin.text != '123456') {
-      setState(() { busy = false; message = 'Credenciales de preview incorrectas.'; });
-      return;
+  }
+
+  Future<void> logout() async {
+    if (preview) {
+      await sessions.clear();
+    } else if (api != null) {
+      await api!.logout();
+    } else {
+      await sessions.clear();
     }
-    setState(() { authed = true; busy = false; });
-    go(View.events);
+    if (!mounted) return;
+    setState(() {
+      authed = false;
+      selectedEvent = null;
+      remoteEvents = const [];
+      remoteSummary = const {};
+      remotePeople = const [];
+      remoteCaptures = const [];
+      used.clear();
+      pin.clear();
+      view = View.login;
+    });
   }
 
   void event(bool isOwned) {
