@@ -15,7 +15,7 @@ Esta primera compilación incluye el flujo visual y operativo base:
 - Reingreso.
 - Identidad visible cuando DIGNI reconoce a la persona.
 - Máscara oficial solicitada para RUT:
-  - `19.502.901-6` → `19.***.**1-6`.
+  - `19.000.000-6` → `19.***.**1-6`.
 
 La integración con la API productiva de DIGNI se incorporará sobre el plugin vigente.
 
