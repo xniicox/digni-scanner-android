@@ -60,12 +60,12 @@ jobs:
       - name: Check Dart and Flutter code
         run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/session_store.dart --no-fatal-infos --no-fatal-warnings
 
-      - name: Build installable internal QA APK
-        run: flutter build apk --debug --dart-define=DIGNI_PREVIEW=true
+      - name: Build production APK
+        run: flutter build apk --release --dart-define=DIGNI_PREVIEW=false --dart-define=DIGNI_API_BASE=https://makita.cl
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: digni-scanner-v3-preview-qa
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: digni-scanner-1.0.1-production
+          path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
