@@ -116,8 +116,12 @@ class DigniAttendee {
     this.reentries = 0,
     this.entryNumber,
     this.code,
+    this.ticketId,
   });
   final int id;
+  /// The API normally returns both `id` and `ticket_id`. Keep them separate
+  /// because history/check-in routes address the ticket, not a list row.
+  final int? ticketId;
   final String name;
   final String maskedRut;
   final String status;
@@ -128,6 +132,7 @@ class DigniAttendee {
 
   factory DigniAttendee.fromJson(Map<String, dynamic> json) => DigniAttendee(
     id: int.tryParse((json['id'] ?? json['ticket_id'] ?? json['attendee_id'] ?? '0').toString()) ?? 0,
+    ticketId: int.tryParse((json['ticket_id'] ?? json['id'] ?? '').toString()),
     name: (json['name'] ?? json['full_name'] ?? '').toString(),
     maskedRut: (json['masked_rut'] ?? '').toString(),
     status: (json['status'] ?? 'pending').toString(),
@@ -139,7 +144,7 @@ class DigniAttendee {
 
   Map<String, dynamic> toJson() => {
     'id': id,
-    'ticket_id': id,
+    'ticket_id': ticketId ?? id,
     'name': name,
     'masked_rut': maskedRut,
     'status': status,
@@ -162,6 +167,8 @@ class DigniValidation {
     this.requiresSupervisor = false,
     this.entryNumber,
     this.courtesy = false,
+    this.accessNumber,
+    this.needsData = false,
   });
   final String outcome;
   final String title;
@@ -173,6 +180,8 @@ class DigniValidation {
   final bool requiresSupervisor;
   final String? entryNumber;
   final bool courtesy;
+  final int? accessNumber;
+  final bool needsData;
 
   factory DigniValidation.fromJson(Map<String, dynamic> json) => DigniValidation(
     outcome: (json['outcome'] ?? 'not_found').toString(),
@@ -189,6 +198,12 @@ class DigniValidation {
     requiresSupervisor: json['requires_supervisor'] == true,
     courtesy: json['courtesy'] == true,
     entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['number'] ?? (json['ticket'] is Map ? (json['ticket'] as Map)['number'] : null))?.toString(),
+    accessNumber: int.tryParse((json['access_number'] ?? '').toString()),
+    needsData: json['needs_data'] == true ||
+        json['requires_data'] == true ||
+        json['data_pending'] == true ||
+        json['incomplete'] == true ||
+        ['pending_data', 'incomplete', 'courtesy'].contains((json['outcome'] ?? '').toString().toLowerCase()),
   );
 }
 
@@ -393,6 +408,7 @@ class DigniApi {
     required String code,
     String? rut,
     String? name,
+    String? qrData,
     required String deviceId,
   }) async {
     final json = await _request('POST', '/validate', body: {
@@ -401,6 +417,9 @@ class DigniApi {
       'code': code,
       if (rut != null && rut.trim().isNotEmpty) 'rut': rut.trim(),
       if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+      // Keep the original civil-document payload available to compatible
+      // backends while `code` remains the ticket code for the current API.
+      if (qrData != null && qrData.trim().isNotEmpty) 'qr_data': qrData.trim(),
       'device_id': deviceId,
     });
     return DigniValidation.fromJson(json);
@@ -432,6 +451,7 @@ class DigniApi {
     required String name,
     required String rut,
     required String email,
+    required String phone,
     required String region,
     required String commune,
     required String deviceId,
@@ -445,6 +465,7 @@ class DigniApi {
       'name': name,
       'rut': rut,
       'email': email,
+      'phone': phone,
       'region': region,
       'commune': commune,
       'device_id': deviceId,
