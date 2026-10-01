@@ -986,8 +986,8 @@ class _DigniV3AppState extends State<DigniV3App> {
     }
 
     final needsData = _needsEntryData(value);
-    String? usedAt;
-    String? usedBy;
+    String? usedAt = value.usedAt;
+    String? usedBy = value.usedBy;
     if (value.outcome == 'already_used' && value.ticketId != null) {
       try {
         final history = await api?.attendeeHistory(value.ticketId!);
