@@ -399,7 +399,15 @@ class _DigniV3AppState extends State<DigniV3App> {
       await _syncPending();
       final events = await api!.events();
       if (!mounted) return;
-      setState(() => remoteEvents = events);
+      setState(() {
+        remoteEvents = events;
+        for (final item in events) {
+          if (item.id == selectedEvent?.id) {
+            selectedEvent = item;
+            break;
+          }
+        }
+      });
       final event = selectedEvent;
       if (event != null) {
         if (event.isOwned) {
@@ -1975,7 +1983,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         : selectedEvent?.title ?? 'Evento';
     final captured = preview
         ? 128
-        : (remoteSummary['captured'] as num?)?.toInt() ?? 0;
+        : selectedEvent?.captureCount ?? 0;
 
     return shell(content([
       label('CAPTACIÓN EN TERRENO'), const SizedBox(height: 11),
@@ -2688,7 +2696,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           const Text('CONTACTOS REGISTRADOS',
             style: TextStyle(color: Colors.white, fontSize: 10)),
           const SizedBox(height: 11),
-          Text(preview ? '128' : '${remoteCaptures.length}',
+          Text(preview ? '128' : '${selectedEvent?.captureCount ?? 0}',
             style: const TextStyle(
               color: Colors.white, fontSize: 47, fontWeight: FontWeight.w900)),
           const Text('Registros de esta activación',
