@@ -391,12 +391,16 @@ class DigniApi {
     required int eventId,
     int? journeyId,
     required String code,
+    String? rut,
+    String? name,
     required String deviceId,
   }) async {
     final json = await _request('POST', '/validate', body: {
       'event_id': eventId,
       if (journeyId != null) 'journey_id': journeyId,
       'code': code,
+      if (rut != null && rut.trim().isNotEmpty) 'rut': rut.trim(),
+      if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
       'device_id': deviceId,
     });
     return DigniValidation.fromJson(json);
