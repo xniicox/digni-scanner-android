@@ -33,7 +33,8 @@ class Decision {
   const Decision(this.tone, this.title, this.message,
     {this.name, this.rut, this.ticketId, this.reenter = false,
       this.supervisor = false, this.confirmEntry = false,
-      this.checkout = false, this.entryNumber, this.courtesy = false});
+      this.checkout = false, this.entryNumber, this.courtesy = false,
+      this.accessNumber, this.usedAt, this.usedBy});
   final Tone tone;
   final String title, message;
   final String? name, rut;
@@ -44,6 +45,8 @@ class Decision {
   final bool checkout;
   final String? entryNumber;
   final bool courtesy;
+  final int? accessNumber;
+  final String? usedAt, usedBy;
 }
 
 class DigniV3App extends StatefulWidget {
@@ -69,6 +72,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   final courtesyName = TextEditingController();
   final courtesyRut = TextEditingController();
   final courtesyEmail = TextEditingController();
+  final courtesyPhone = TextEditingController();
   final courtesyRegion = TextEditingController(text: 'Región Metropolitana');
   final courtesyCommune = TextEditingController(text: 'Santiago');
   final peopleSearchFocus = FocusNode();
@@ -464,6 +468,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     courtesyName.dispose();
     courtesyRut.dispose();
     courtesyEmail.dispose();
+    courtesyPhone.dispose();
     courtesyRegion.dispose();
     courtesyCommune.dispose();
     super.dispose();
@@ -751,16 +756,95 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   Map<String, String> _civilIdentity(String raw) {
-    final uri = Uri.tryParse(raw.trim());
-    if (uri == null || !uri.host.toLowerCase().contains('registrocivil.cl')) {
-      return const {};
+    final trimmed = raw.trim();
+    final uri = Uri.tryParse(trimmed);
+    final isCivilUrl = uri != null &&
+        uri.host.toLowerCase().contains('registrocivil.cl');
+    String queryValue(String key) {
+      if (uri == null) return '';
+      for (final entry in uri.queryParameters.entries) {
+        if (entry.key.toLowerCase() == key.toLowerCase()) {
+          return entry.value.trim();
+        }
+      }
+      return '';
     }
-    final rut = (uri.queryParameters['RUN'] ?? uri.queryParameters['run'] ?? '').trim();
-    final name = (uri.queryParameters['name'] ?? uri.queryParameters['nombre'] ?? '').trim();
+    var rut = isCivilUrl ? queryValue('run') : '';
+    var name = isCivilUrl ? (queryValue('name').isNotEmpty
+        ? queryValue('name') : queryValue('nombre')) : '';
+    // Some camera decoders expose the PDF417 payload as text instead of a
+    // URL. Keep a safe local fallback for the same Registro Civil fields.
+    if (rut.isEmpty) {
+      rut = RegExp(r'(?:RUN|RUT|document_number)\s*[=:]\s*([0-9.\-]{7,12}[0-9kK])',
+          caseSensitive: false).firstMatch(trimmed)?.group(1)?.trim() ?? '';
+    }
+    if (name.isEmpty) {
+      name = RegExp(r'(?:name|nombre)\s*[=:]\s*([^&\n]+)',
+          caseSensitive: false).firstMatch(trimmed)?.group(1)?.trim() ?? '';
+    }
+    if (!isCivilUrl && rut.isEmpty && name.isEmpty) return const {};
     return {
       if (rut.isNotEmpty) 'rut': rut,
       if (name.isNotEmpty) 'name': name,
     };
+  }
+
+  String _canonicalRut(String value) => value
+      .toUpperCase()
+      .replaceAll(RegExp(r'[^0-9K]'), '');
+
+  Future<String?> _resolveCivilTicketCode(
+      DigniApi client, DigniEvent event, Map<String, String> identity) async {
+    final terms = <String>{
+      if ((identity['rut'] ?? '').isNotEmpty) identity['rut']!,
+      if ((identity['name'] ?? '').isNotEmpty) identity['name']!,
+    };
+    for (final term in terms) {
+      try {
+        final rows = await client.attendees(
+          event.id,
+          journeyId: journeyId,
+          query: term,
+        );
+        final expectedRut = _canonicalRut(identity['rut'] ?? '');
+        for (final row in rows) {
+          final sameName = (identity['name'] ?? '').isNotEmpty &&
+              row.name.trim().toLowerCase() ==
+                  identity['name']!.trim().toLowerCase();
+          final sameRut = expectedRut.isNotEmpty &&
+              _canonicalRut(row.maskedRut) == expectedRut;
+          if ((sameName || sameRut) &&
+              row.code != null && row.code!.trim().isNotEmpty) {
+            return row.code!.trim();
+          }
+        }
+      } on DigniApiException {
+        // The current plugin protects the attendee list by role. A compatible
+        // validate endpoint can still consume the original QR plus identity.
+        break;
+      } catch (_) {
+        break;
+      }
+    }
+    return null;
+  }
+
+  bool _needsEntryData(DigniValidation value) {
+    if (value.needsData || value.courtesy || value.outcome == 'requires_supervisor') return true;
+    final text = '${value.outcome} ${value.title} ${value.message}'.toLowerCase();
+    return text.contains('dato') || text.contains('cortes') ||
+        text.contains('sin asign') || text.contains('incomplet') ||
+        text.contains('pendiente');
+  }
+
+  String _displayAccessTime(String raw) {
+    final parsed = DateTime.tryParse(raw.replaceFirst(' ', 'T'))?.toLocal();
+    if (parsed == null) return raw;
+    final hh = parsed.hour.toString().padLeft(2, '0');
+    final mm = parsed.minute.toString().padLeft(2, '0');
+    final dd = parsed.day.toString().padLeft(2, '0');
+    final mo = parsed.month.toString().padLeft(2, '0');
+    return '$hh:$mm · $dd/$mo/${parsed.year}';
   }
 
   Future<void> _scan(String raw) async {
@@ -768,7 +852,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     activePerson = null;
     if (selectedEvent == null || !_eventAvailableToday(selectedEvent!)) {
       _showDecision(const Decision(Tone.bad, 'Evento cerrado',
-        'No puedes escanear ni modificar la bitácora fuera de la jornada de hoy.'));
+        'No puedes escanear ni modificar el historial de entrada fuera de la jornada de hoy.'));
       return;
     }
 
@@ -794,32 +878,41 @@ class _DigniV3AppState extends State<DigniV3App> {
       }
       final deviceId = await sessions.ensureDeviceId();
       final civil = _civilIdentity(raw);
-      final payload = _normalizeScanPayload(raw);
+      var payload = _normalizeScanPayload(raw);
+      if (civil.isNotEmpty) {
+        // The WordPress scanner API validates the ticket's own QR code. When
+        // the camera reads a Chilean ID, first resolve that identity to the
+        // attendee's ticket code; compatible servers may instead consume the
+        // original URL through qr_data/rut/name below.
+        final ticketCode = await _resolveCivilTicketCode(client, event, civil);
+        payload = ticketCode ?? civil['rut'] ?? raw.trim();
+      }
       final validation = await client.validate(
         eventId: event.id,
         journeyId: journeyId,
         code: payload,
         rut: civil['rut'],
         name: civil['name'],
+        qrData: civil.isEmpty ? null : raw,
         deviceId: deviceId,
       );
       if ((validation.outcome == 'valid' ||
               validation.outcome == 'approved') &&
           validation.ticketId != null) {
-        // Validation and registration are separate actions. Keep the result
-        // visible until the operator explicitly confirms the entry.
+        // A first valid scan is an admission, not a second confirmation step.
+        // Register it immediately so the operator receives the green ticket,
+        // sound and access number in the same flow.
         _showDecision(Decision(
-          Tone.warn,
+          Tone.good,
           validation.title.isEmpty ? 'Entrada válida' : validation.title,
-          validation.message.isEmpty
-              ? 'Confirma el ingreso para registrarlo.'
-              : '${validation.message} Confirma el ingreso para registrarlo.',
+          validation.message.isEmpty ? 'Registrando ingreso…' : validation.message,
           name: validation.name,
           rut: validation.maskedRut,
           ticketId: validation.ticketId,
           entryNumber: validation.entryNumber,
           confirmEntry: true,
         ));
+        await confirmEntry();
       } else {
         await _showServerDecision(validation);
       }
@@ -892,19 +985,50 @@ class _DigniV3AppState extends State<DigniV3App> {
       tone = Tone.warn;
     }
 
+    final needsData = _needsEntryData(value);
+    String? usedAt;
+    String? usedBy;
+    if (value.outcome == 'already_used' && value.ticketId != null) {
+      try {
+        final history = await api?.attendeeHistory(value.ticketId!);
+        final prior = (history ?? const <Map<String, dynamic>>[])
+            .where((item) {
+              final action = (item['action'] ?? item['type'] ?? '').toString();
+              return action == 'checkin' || action == 'entered' ||
+                  action == 'scanner_checkin';
+            })
+            .toList();
+        if (prior.isNotEmpty) {
+          final item = prior.last;
+          usedAt = (item['created_at'] ?? '').toString();
+          usedBy = (item['operator_name'] ?? '').toString();
+        }
+      } catch (_) {
+        // History is role-protected by the plugin; the validation result is
+        // still useful even when the operator cannot read the audit trail.
+      }
+    }
+    var message = value.message;
+    if (usedAt != null && usedAt!.isNotEmpty) {
+      final by = usedBy == null || usedBy!.isEmpty ? '' : ' · $usedBy';
+      message = '$message\nIngresó a las ${_displayAccessTime(usedAt!)}$by';
+    }
     _showDecision(Decision(
       tone,
       value.title,
-      value.message,
+      message,
       name: value.name,
       rut: value.maskedRut,
       ticketId: value.ticketId,
       reenter: value.canReenter,
-      supervisor: value.requiresSupervisor,
-      courtesy: value.courtesy,
+      supervisor: value.requiresSupervisor && !needsData,
+      courtesy: needsData,
       checkout: value.outcome == 'already_used',
-      entryNumber: value.entryNumber,
-      confirmEntry: value.courtesy,
+      entryNumber: value.entryNumber ?? value.accessNumber?.toString(),
+      accessNumber: value.accessNumber,
+      confirmEntry: false,
+      usedAt: usedAt,
+      usedBy: usedBy,
     ));
     if (tone == Tone.good) {
       await _approvalFeedback();
@@ -924,6 +1048,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     courtesyName.clear();
     courtesyRut.clear();
     courtesyEmail.clear();
+    courtesyPhone.clear();
     courtesyRegion.text = 'Región Metropolitana';
     courtesyCommune.text = 'Santiago';
     final accepted = await showDialog<bool>(
@@ -936,6 +1061,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           TextField(controller: courtesyRut, decoration: const InputDecoration(labelText: 'RUT'), keyboardType: TextInputType.text),
           const SizedBox(height: 10),
           TextField(controller: courtesyEmail, decoration: const InputDecoration(labelText: 'Correo electrónico'), keyboardType: TextInputType.emailAddress),
+          const SizedBox(height: 10),
+          TextField(controller: courtesyPhone, decoration: const InputDecoration(labelText: 'Teléfono'), keyboardType: TextInputType.phone),
           const SizedBox(height: 10),
           TextField(controller: courtesyRegion, decoration: const InputDecoration(labelText: 'Región')),
           const SizedBox(height: 10),
@@ -950,8 +1077,8 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (accepted != true || !mounted) return;
     final event = selectedEvent;
     final client = api;
-    if (event == null || client == null || decision?.ticketId == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty || courtesyEmail.text.trim().isEmpty) {
-      _showDecision(const Decision(Tone.bad, 'Faltan datos', 'Completa nombre y RUT para registrar la cortesía.'));
+    if (event == null || client == null || decision?.ticketId == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty || courtesyEmail.text.trim().isEmpty || courtesyPhone.text.trim().isEmpty) {
+      _showDecision(const Decision(Tone.bad, 'Faltan datos', 'Completa nombre, RUT, correo y teléfono para registrar la entrada.'));
       return;
     }
     setState(() => busy = true);
@@ -959,7 +1086,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       final deviceId = await sessions.ensureDeviceId();
       final result = await client.courtesyCheckIn(
         eventId: event.id, journeyId: journeyId, ticketId: decision!.ticketId!, name: courtesyName.text.trim(),
-        email: courtesyEmail.text.trim(), rut: courtesyRut.text.trim(), region: courtesyRegion.text.trim(),
+        email: courtesyEmail.text.trim(), phone: courtesyPhone.text.trim(), rut: courtesyRut.text.trim(), region: courtesyRegion.text.trim(),
         commune: courtesyCommune.text.trim(), deviceId: deviceId,
         idempotencyKey: _idempotencyKey(deviceId),
       );
@@ -1245,28 +1372,12 @@ class _DigniV3AppState extends State<DigniV3App> {
         : 'assets/brand/DIGNI-NEGRO.png';
     return Image.asset(
       asset,
+      key: ValueKey(asset),
       width: width,
       fit: BoxFit.contain,
-      errorBuilder: (_, __, ___) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: brandRed,
-              borderRadius: BorderRadius.circular(11),
-            ),
-            child: const Text('D', style: TextStyle(
-              color: Colors.white, fontSize: 25, fontWeight: FontWeight.w900)),
-          ),
-          const SizedBox(width: 8),
-          Text('DIGNI', style: TextStyle(
-            color: light ? Colors.white : ink,
-            fontSize: 19, fontWeight: FontWeight.w900)),
-        ],
-      ),
+      // Do not revive the obsolete square-D wordmark when an asset lookup
+      // fails. The production bundle includes both official wordmarks.
+      errorBuilder: (_, __, ___) => SizedBox(width: width, height: 34),
     );
   }
 
@@ -1280,7 +1391,8 @@ class _DigniV3AppState extends State<DigniV3App> {
   Widget panel(Widget child, {Color? color, Gradient? gradient, EdgeInsets? padding}) => Container(
     width: double.infinity,
     padding: padding ?? const EdgeInsets.all(17),
-    decoration: BoxDecoration(color: color ?? surface,
+    decoration: BoxDecoration(color: gradient == null ? (color ?? surface) : null,
+      gradient: gradient,
       borderRadius: BorderRadius.circular(23),
       border: Border.all(color: color == null ? border : Colors.transparent)),
     child: child);
@@ -1856,7 +1968,14 @@ class _DigniV3AppState extends State<DigniV3App> {
           style: const TextStyle(color: Colors.white, fontSize: 12)),
         const SizedBox(height: 11),
         const Divider(color: Color(0xFF696969)),
-      ]), color: space),
+      ],),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: dark
+              ? const [Color(0xFF1B3742), Color(0xFF0D151A)]
+              : const [Color(0xFF2A4A56), Color(0xFF12242C)],
+        )),
       const SizedBox(height: 16),
       Row(children: [
         metric('$ingress', 'Ingresados'),
@@ -2112,15 +2231,22 @@ class _DigniV3AppState extends State<DigniV3App> {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
-                color: tint,
+                color: r.tone == Tone.good
+                    ? (dark ? const Color(0xFF173B2C) : const Color(0xFFE1F7E9))
+                    : tint,
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: brandRed.withValues(alpha: .35)),
+                border: Border.all(color: (r.tone == Tone.good ? good : brandRed)
+                    .withValues(alpha: .35)),
               ),
               child: Row(children: [
-                const Icon(Icons.confirmation_number_rounded, color: brandRed),
+                Icon(Icons.confirmation_number_rounded,
+                    color: statusInk(r.tone == Tone.good ? good : brandRed)),
                 const SizedBox(width: 9),
-                Text('ENTRADA ${r.entryNumber}', style: TextStyle(
-                  color: actionInk, fontWeight: FontWeight.w900, fontSize: 16)),
+                Text(r.accessNumber != null
+                    ? 'TICKET DE INGRESO #${r.accessNumber}'
+                    : 'ENTRADA ${r.entryNumber}', style: TextStyle(
+                  color: statusInk(r.tone == Tone.good ? good : brandRed),
+                  fontWeight: FontWeight.w900, fontSize: 16)),
               ]),
             ),
           ],
@@ -2174,13 +2300,22 @@ class _DigniV3AppState extends State<DigniV3App> {
         OutlinedButton.icon(
           onPressed: () => _showRemoteHistory(activePerson!),
           icon: const Icon(Icons.history_rounded),
-          label: const Text('Ver bitácora completa'),
+          label: const Text('Ver historial de entrada'),
         ),
       ],
       const SizedBox(height: 13),
-      OutlinedButton(onPressed: () => go(View.events),
-        child: const Text('Volver a mis eventos')),
-    ]), back: true, backTarget: View.events);
+      OutlinedButton(
+        onPressed: () => go(activePerson != null
+            ? View.people
+            : (own ? View.own : View.events)),
+        child: Text(activePerson != null
+            ? 'Volver a asistentes'
+            : (own ? 'Volver a la jornada' : 'Volver a mis eventos')),
+      ),
+    ]), back: true,
+      backTarget: activePerson != null
+          ? View.people
+          : (own ? View.own : View.events));
   }
 
   Future<void> _historySheet({
@@ -2293,17 +2428,17 @@ class _DigniV3AppState extends State<DigniV3App> {
       'checkin' => Decision(
           Tone.warn, 'Confirmar ingreso',
           'Revisa los datos y confirma el ingreso de esta persona.',
-          name: person.name, rut: person.maskedRut, ticketId: person.id, entryNumber: person.entryNumber,
+          name: person.name, rut: person.maskedRut, ticketId: person.ticketId ?? person.id, entryNumber: person.entryNumber,
           confirmEntry: !alreadyIn),
       'checkout' => Decision(
           Tone.warn, 'Registrar salida',
           'Confirma que la persona está saliendo del evento.',
-          name: person.name, rut: person.maskedRut, ticketId: person.id, entryNumber: person.entryNumber,
+          name: person.name, rut: person.maskedRut, ticketId: person.ticketId ?? person.id, entryNumber: person.entryNumber,
           checkout: alreadyIn),
       _ => Decision(
           Tone.warn, 'Confirmar reingreso',
           'Confirma el reingreso de esta persona.',
-          name: person.name, rut: person.maskedRut, ticketId: person.id, entryNumber: person.entryNumber,
+          name: person.name, rut: person.maskedRut, ticketId: person.ticketId ?? person.id, entryNumber: person.entryNumber,
           reenter: alreadyIn),
     };
     setState(() { decision = result; view = View.result; });
@@ -2312,7 +2447,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   Future<void> _showRemoteHistory(DigniAttendee person) async {
     final client = api;
     if (client == null) return;
-    final historyFuture = client.attendeeHistory(person.id);
+    final historyFuture = client.attendeeHistory(person.ticketId ?? person.id);
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
@@ -2339,21 +2474,26 @@ class _DigniV3AppState extends State<DigniV3App> {
                   } else if (action == 'checkout') {
                     icon = Icons.logout_rounded; color = amber;
                   } else if (action == 'reentry') icon = Icons.replay_rounded;
-                  entries.add((icon, (item['label'] ?? action).toString(), created, color));
+                  final operator = (item['operator_name'] ?? '').toString();
+                  final detail = [
+                    if (created.isNotEmpty) _displayAccessTime(created),
+                    if (operator.isNotEmpty) operator,
+                  ].join(' · ');
+                  entries.add((icon, (item['label'] ?? action).toString(), detail, color));
                 }
               }
               if (snapshot.hasError) {
-                entries.add((Icons.cloud_off_rounded, 'Bitácora no disponible',
+                entries.add((Icons.cloud_off_rounded, 'Historial no disponible',
                   'No pudimos cargarla ahora. Las acciones siguen disponibles.', amber));
               } else if (snapshot.connectionState == ConnectionState.waiting) {
-                entries.add((Icons.sync_rounded, 'Cargando bitácora…', 'Puedes elegir una acción mientras termina.', amber));
+                entries.add((Icons.sync_rounded, 'Cargando historial…', 'Puedes elegir una acción mientras termina.', amber));
               } else if (entries.isEmpty) {
                 entries.add((Icons.schedule_rounded, 'Sin movimientos registrados',
                   'No hay ingresos ni reingresos en el historial.', muted));
               }
               final alreadyIn = person.status == 'checked_in' || person.status == 'reentry';
               return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Historial asistente', style: Theme.of(sheetContext).textTheme.titleLarge),
+                Text('Historial de entrada', style: Theme.of(sheetContext).textTheme.titleLarge),
                 const SizedBox(height: 12),
                 Text(person.name, style: Theme.of(sheetContext).textTheme.titleLarge),
                 const SizedBox(height: 5),
