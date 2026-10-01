@@ -10,6 +10,12 @@ class DigniApiException implements Exception {
   String toString() => message;
 }
 
+class DigniTwoFactorRequired implements Exception {
+  DigniTwoFactorRequired(this.challengeId, this.message);
+  final String challengeId;
+  final String message;
+}
+
 class DigniSession {
   const DigniSession({
     required this.accessToken,
@@ -31,14 +37,17 @@ class DigniSession {
 
   factory DigniSession.fromJson(Map<String, dynamic> json) {
     final now = DateTime.now().toUtc();
+    final operator = (json['operator'] ?? json['user']) is Map
+        ? Map<String, dynamic>.from((json['operator'] ?? json['user']) as Map)
+        : const <String, dynamic>{};
     return DigniSession(
       accessToken: json['access_token'] as String,
       refreshToken: json['refresh_token'] as String,
       accessExpiresAt: now.add(Duration(seconds: (json['expires_in'] as num?)?.toInt() ?? 900)),
       refreshExpiresAt: now.add(Duration(seconds: (json['refresh_expires_in'] as num?)?.toInt() ?? 2592000)),
-      operatorId: (json['operator']?['id'] as num?)?.toInt() ?? 0,
-      operatorName: (json['operator']?['name'] ?? 'Operador DIGNI').toString(),
-      email: (json['operator']?['email'] ?? '').toString(),
+      operatorId: (operator['id'] as num?)?.toInt() ?? 0,
+      operatorName: (operator['name'] ?? 'Operador DIGNI').toString(),
+      email: (operator['email'] ?? '').toString(),
     );
   }
 }
@@ -51,6 +60,7 @@ class DigniEvent {
     required this.organizer,
     required this.dateLabel,
     required this.location,
+    this.state = 'active',
     this.logoUrl,
     this.captureId,
     this.journeys = const [],
@@ -62,11 +72,13 @@ class DigniEvent {
   final String organizer;
   final String dateLabel;
   final String location;
+  final String state;
   final String? logoUrl;
   final int? captureId;
   final List<Map<String, dynamic>> journeys;
 
   bool get isOwned => mode == 'owned';
+  bool get isOpen => const {'active', 'open', 'opened'}.contains(state);
 
   factory DigniEvent.fromJson(Map<String, dynamic> json) => DigniEvent(
     id: (json['id'] as num).toInt(),
@@ -75,6 +87,7 @@ class DigniEvent {
     organizer: (json['organizer'] ?? '').toString(),
     dateLabel: (json['date_label'] ?? '').toString(),
     location: (json['location'] ?? '').toString(),
+    state: (json['state'] ?? 'active').toString(),
     logoUrl: json['logo_url']?.toString(),
     captureId: (json['capture_id'] as num?)?.toInt(),
     journeys: ((json['journeys'] as List?) ?? const [])
@@ -92,6 +105,8 @@ class DigniAttendee {
     required this.status,
     this.checkedAt,
     this.reentries = 0,
+    this.entryNumber,
+    this.code,
   });
   final int id;
   final String name;
@@ -99,6 +114,8 @@ class DigniAttendee {
   final String status;
   final String? checkedAt;
   final int reentries;
+  final String? entryNumber;
+  final String? code;
 
   factory DigniAttendee.fromJson(Map<String, dynamic> json) => DigniAttendee(
     id: (json['id'] as num).toInt(),
@@ -107,7 +124,21 @@ class DigniAttendee {
     status: (json['status'] ?? 'pending').toString(),
     checkedAt: json['checked_at']?.toString(),
     reentries: (json['reentries'] as num?)?.toInt() ?? 0,
+    entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['ticket_code'])?.toString(),
+    code: json['code']?.toString(),
   );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'ticket_id': id,
+    'name': name,
+    'masked_rut': maskedRut,
+    'status': status,
+    if (checkedAt != null) 'checked_at': checkedAt,
+    'reentries': reentries,
+    if (entryNumber != null) 'entry_number': entryNumber,
+    if (code != null) 'code': code,
+  };
 }
 
 class DigniValidation {
@@ -135,8 +166,12 @@ class DigniValidation {
     title: (json['title'] ?? 'No disponible').toString(),
     message: (json['message'] ?? '').toString(),
     ticketId: (json['ticket_id'] as num?)?.toInt(),
-    name: json['name']?.toString(),
-    maskedRut: json['masked_rut']?.toString(),
+    name: (json['name'] ?? (json['attendee'] is Map
+            ? (json['attendee'] as Map)['name']
+            : null))?.toString(),
+    maskedRut: (json['masked_rut'] ?? (json['attendee'] is Map
+            ? (json['attendee'] as Map)['masked_rut']
+            : null))?.toString(),
     canReenter: json['can_reenter'] == true,
     requiresSupervisor: json['requires_supervisor'] == true,
   );
@@ -216,6 +251,12 @@ class DigniApi {
         statusCode: response.statusCode,
       );
     }
+    // WordPress REST responses are wrapped as {success:true,data:{...}}.
+    // Normalize that envelope once so all client models consume the same
+    // fields in both wrapped and legacy responses.
+    if (json['success'] == true && json['data'] is Map) {
+      json = Map<String, dynamic>.from(json['data'] as Map);
+    }
     return json;
   }
 
@@ -233,8 +274,30 @@ class DigniApi {
       'device_name': deviceName,
       'app_version': appVersion,
     });
+    if (json['requires_2fa'] == true) {
+      throw DigniTwoFactorRequired(
+        (json['challenge_id'] ?? '').toString(),
+        'Ingresa el código de verificación de tu autenticador.',
+      );
+    }
     final session = DigniSession.fromJson(json);
     await sessions.save(session);
+    return session;
+  }
+
+  Future<DigniSession> verify2fa({
+    required String challengeId,
+    required String code,
+    required String deviceId,
+  }) async {
+    final json = await _request('POST', '/auth/2fa/verify', authenticated: false,
+      body: {
+        'challenge_id': challengeId,
+        'code': code,
+        'device_id': deviceId,
+      });
+    final session = DigniSession.fromJson(json);
+    await sessions.save(session, deviceId: deviceId);
     return session;
   }
 
@@ -291,7 +354,11 @@ class DigniApi {
       if (status != 'all') 'status': status,
       'limit': '100',
     });
-    return ((json['items'] as List?) ?? const [])
+    final rows = (json['items'] as List?) ??
+        (json['attendees'] as List?) ??
+        (json['results'] as List?) ??
+        const [];
+    return rows
       .whereType<Map>()
       .map((x) => DigniAttendee.fromJson(Map<String, dynamic>.from(x)))
       .toList();
@@ -338,6 +405,32 @@ class DigniApi {
     });
     return DigniValidation.fromJson(json);
   }
+
+  Future<DigniValidation> checkout({
+    required int eventId,
+    int? journeyId,
+    required int ticketId,
+    required String deviceId,
+    required String idempotencyKey,
+  }) async {
+    final json = await _request('POST', '/check-out', body: {
+      'event_id': eventId,
+      if (journeyId != null) 'journey_id': journeyId,
+      'ticket_id': ticketId,
+      'device_id': deviceId,
+      'idempotency_key': idempotencyKey,
+    });
+    return DigniValidation.fromJson(json);
+  }
+
+  Future<Map<String, dynamic>> sync(
+      List<Map<String, dynamic>> operations) async {
+    if (operations.isEmpty) return const {'processed': 0, 'items': []};
+    return _request('POST', '/sync', body: {'operations': operations});
+  }
+
+  Future<Map<String, dynamic>> deviceStatus() =>
+      _request('GET', '/device-status');
 
   Future<List<Map<String, dynamic>>> captures(int eventId, {String query = ''}) async {
     final json = await _request('GET', '/events/$eventId/captures',

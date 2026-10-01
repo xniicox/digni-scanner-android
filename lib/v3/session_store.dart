@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'api.dart';
@@ -19,10 +20,82 @@ class SessionStore {
   static const _email = 'digni_operator_email';
   static const _device = 'digni_device_id';
   static const _preview = 'digni_preview_session';
+  static const _lastSync = 'digni_last_sync_at';
+  static const _pending = 'digni_pending_operations';
 
   Future<String?> get accessToken => storage.read(key: _access);
   Future<String?> get refreshToken => storage.read(key: _refresh);
   Future<String?> get deviceId => storage.read(key: _device);
+
+  Future<DateTime?> get lastSyncAt async {
+    final value = await storage.read(key: _lastSync);
+    return value == null ? null : DateTime.tryParse(value);
+  }
+
+  Future<void> markSynced() async {
+    await storage.write(
+      key: _lastSync,
+      value: DateTime.now().toUtc().toIso8601String(),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> pendingOperations() async {
+    final raw = await storage.read(key: _pending);
+    if (raw == null || raw.isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return <Map<String, dynamic>>[];
+      return decoded
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<int> pendingOperationCount() async =>
+      (await pendingOperations()).length;
+
+  Future<void> savePendingOperations(
+      List<Map<String, dynamic>> operations) async {
+    if (operations.isEmpty) {
+      await storage.delete(key: _pending);
+      return;
+    }
+    await storage.write(key: _pending, value: jsonEncode(operations));
+  }
+
+  Future<void> queueOperation(Map<String, dynamic> operation) async {
+    final current = await pendingOperations();
+    final localId = operation['local_id']?.toString();
+    current.removeWhere((item) => item['local_id']?.toString() == localId);
+    current.add(Map<String, dynamic>.from(operation));
+    await savePendingOperations(current);
+  }
+
+  Future<void> saveAttendeeCache(
+      int eventId, int? journeyId, List<Map<String, dynamic>> items) async {
+    final key = 'digni_attendees_${eventId}_${journeyId ?? 0}';
+    await storage.write(key: key, value: jsonEncode(items));
+  }
+
+  Future<List<Map<String, dynamic>>> attendeeCache(
+      int eventId, int? journeyId) async {
+    final key = 'digni_attendees_${eventId}_${journeyId ?? 0}';
+    final raw = await storage.read(key: key);
+    if (raw == null || raw.isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return <Map<String, dynamic>>[];
+      return decoded
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
 
   Future<String> ensureDeviceId() async {
     final current = await deviceId;

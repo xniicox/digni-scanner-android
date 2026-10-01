@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -30,13 +31,16 @@ enum Tone { good, warn, bad }
 class Decision {
   const Decision(this.tone, this.title, this.message,
     {this.name, this.rut, this.ticketId, this.reenter = false,
-      this.supervisor = false});
+      this.supervisor = false, this.confirmEntry = false,
+      this.checkout = false});
   final Tone tone;
   final String title, message;
   final String? name, rut;
   final int? ticketId;
   final bool reenter;
   final bool supervisor;
+  final bool confirmEntry;
+  final bool checkout;
 }
 
 class DigniV3App extends StatefulWidget {
@@ -50,6 +54,8 @@ class _DigniV3AppState extends State<DigniV3App> {
   final AudioPlayer player = AudioPlayer();
   final email = TextEditingController();
   final pin = TextEditingController();
+  final searchController = TextEditingController();
+  final twoFactorCode = TextEditingController();
 
   late final DigniApi? api = apiBase.trim().isEmpty
       ? null
@@ -61,6 +67,13 @@ class _DigniV3AppState extends State<DigniV3App> {
   Decision? decision;
   final used = <String>{};
   Timer? autoReturn;
+  Timer? refreshTimer;
+  StreamSubscription<List<ConnectivityResult>>? connectivitySubscription;
+  bool online = true;
+  DateTime? lastSyncAt;
+  int pendingOperations = 0;
+  int offlineMaxMinutes = 30;
+  String? twoFactorChallenge;
 
   List<DigniEvent> remoteEvents = const [];
   DigniEvent? selectedEvent;
@@ -101,13 +114,193 @@ class _DigniV3AppState extends State<DigniV3App> {
   @override
   void initState() {
     super.initState();
+    refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(_refreshRemoteData());
+    });
+    unawaited(_watchConnectivity());
     unawaited(_bootstrap());
+  }
+
+  Future<void> _watchConnectivity() async {
+    final connectivity = Connectivity();
+    final current = await connectivity.checkConnectivity();
+    if (mounted) setState(() => online = _hasConnection(current));
+    connectivitySubscription = connectivity.onConnectivityChanged.listen((value) {
+      if (mounted) setState(() => online = _hasConnection(value));
+      if (_hasConnection(value)) unawaited(_refreshRemoteData());
+    });
+  }
+
+  bool _hasConnection(List<ConnectivityResult> values) =>
+      values.any((value) => value != ConnectivityResult.none);
+
+  Future<void> _syncPending() async {
+    final client = api;
+    if (preview || client == null || !online) {
+      pendingOperations = await sessions.pendingOperationCount();
+      return;
+    }
+    final pending = await sessions.pendingOperations();
+    if (pending.isEmpty) {
+      if (mounted) setState(() => pendingOperations = 0);
+      return;
+    }
+    try {
+      final result = await client.sync(pending);
+      final items = (result['items'] as List?) ?? const [];
+      final rejected = <String>{};
+      for (final item in items.whereType<Map>()) {
+        if (item['success'] != true) continue;
+        final localId = item['local_id']?.toString();
+        if (localId != null && localId.isNotEmpty) rejected.add(localId);
+      }
+      final remaining = pending
+          .where((item) => !rejected.contains(item['local_id']?.toString()))
+          .toList();
+      await sessions.savePendingOperations(remaining);
+      await sessions.markSynced();
+      final synced = await sessions.lastSyncAt;
+      if (mounted) {
+        setState(() {
+          pendingOperations = remaining.length;
+          lastSyncAt = synced;
+          online = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => pendingOperations = pending.length);
+    }
+  }
+
+  Future<void> _manualSync() async {
+    if (!online) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Sin conexión. La sincronización se reintentará automáticamente.'),
+        ));
+      }
+      return;
+    }
+    setState(() => busy = true);
+    await _refreshRemoteData();
+    if (mounted) {
+      setState(() => busy = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(pendingOperations == 0
+            ? 'Sincronización completada.'
+            : '$pendingOperations operación(es) siguen pendientes.'),
+      ));
+    }
+  }
+
+  Future<void> _queueOfflineOperation({
+    required int eventId,
+    required int? journeyId,
+    required int ticketId,
+    required String action,
+    required String deviceId,
+  }) async {
+    final now = DateTime.now().toUtc();
+    final localId = 'local-${now.microsecondsSinceEpoch}';
+    await sessions.queueOperation({
+      'local_id': localId,
+      'event_id': eventId,
+      if (journeyId != null) 'journey_id': journeyId,
+      'ticket_id': ticketId,
+      'action': action,
+      'idempotency_key': _idempotencyKey(deviceId),
+      'client_created_at': now.toIso8601String(),
+    });
+    final count = await sessions.pendingOperationCount();
+    if (mounted) {
+      setState(() {
+        pendingOperations = count;
+        online = false;
+      });
+    }
+  }
+
+  Future<Decision?> _offlineScan(String raw) async {
+    final event = selectedEvent;
+    if (event == null || !event.isOwned) return null;
+    final cached = await sessions.attendeeCache(event.id, journeyId);
+    final needle = raw.trim().toUpperCase();
+    Map<String, dynamic>? match;
+    for (final item in cached) {
+      final code = (item['code'] ?? item['entry_number'] ?? '')
+          .toString()
+          .trim()
+          .toUpperCase();
+      if (code.isNotEmpty && code == needle) {
+        match = item;
+        break;
+      }
+    }
+    if (match == null) {
+      return const Decision(
+        Tone.bad,
+        'Entrada no disponible sin conexión',
+        'No existe una copia local de este QR. Conéctate para validarlo.',
+      );
+    }
+    final status = (match['status'] ?? 'registered').toString();
+    final alreadyIn = status == 'checked_in' || status == 'reentry';
+    final ticketId = int.tryParse(
+      (match['ticket_id'] ?? match['id'] ?? '').toString(),
+    );
+    return Decision(
+      Tone.warn,
+      alreadyIn ? 'Entrada registrada localmente' : 'Entrada disponible offline',
+      alreadyIn
+          ? 'Puedes registrar una salida cuando se recupere la conexión.'
+          : 'El ingreso quedará pendiente de sincronización.',
+      name: match['name']?.toString(),
+      rut: match['masked_rut']?.toString(),
+      ticketId: ticketId,
+      checkout: alreadyIn,
+      confirmEntry: !alreadyIn,
+    );
+  }
+
+  Future<void> _refreshRemoteData() async {
+    if (preview || !authed || api == null) return;
+    try {
+      await _syncPending();
+      final events = await api!.events();
+      if (!mounted) return;
+      setState(() => remoteEvents = events);
+      final event = selectedEvent;
+      if (event != null) {
+        final summary = await api!.summary(event.id, journeyId: journeyId);
+        if (!mounted) return;
+        setState(() => remoteSummary = summary);
+        if (view == View.people) await _loadPeople();
+        if (view == View.captures) await _loadCaptures();
+      }
+      await sessions.markSynced();
+      final synced = await sessions.lastSyncAt;
+      final status = await api!.deviceStatus();
+      offlineMaxMinutes = (status['max_offline_age_minutes'] as num?)?.toInt() ?? 30;
+      final pendingCount = await sessions.pendingOperationCount();
+      if (mounted) {
+        setState(() {
+          online = true;
+          lastSyncAt = synced;
+          pendingOperations = pendingCount;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      final synced = await sessions.lastSyncAt;
+      setState(() { online = false; lastSyncAt = synced; });
+    }
   }
 
   Future<void> _bootstrap() async {
     final splashDelay =
         Future<void>.delayed(const Duration(milliseconds: 1200));
     var restored = false;
+    pendingOperations = await sessions.pendingOperationCount();
 
     if (preview) {
       restored = await sessions.previewSessionValid();
@@ -120,9 +313,13 @@ class _DigniV3AppState extends State<DigniV3App> {
       if (restored) {
         try {
           remoteEvents = await api!.events();
+          await sessions.markSynced();
+          lastSyncAt = await sessions.lastSyncAt;
         } catch (_) {
-          restored = false;
-          await sessions.clear();
+          // Keep the valid local session and show a stale/offline banner while
+          // the network recovers.
+          online = false;
+          lastSyncAt = await sessions.lastSyncAt;
         }
       }
     }
@@ -138,9 +335,13 @@ class _DigniV3AppState extends State<DigniV3App> {
   @override
   void dispose() {
     autoReturn?.cancel();
+    refreshTimer?.cancel();
+    connectivitySubscription?.cancel();
     player.dispose();
     email.dispose();
     pin.dispose();
+    searchController.dispose();
+    twoFactorCode.dispose();
     super.dispose();
   }
 
@@ -153,6 +354,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       view = next;
       message = '';
       search = '';
+      searchController.clear();
     });
     if (!preview && next == View.people) unawaited(_loadPeople());
     if (!preview && next == View.captures) unawaited(_loadCaptures());
@@ -160,6 +362,10 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Future<void> authenticate() async {
     if (busy) return;
+    if (twoFactorChallenge != null) {
+      await _verifyTwoFactor();
+      return;
+    }
     final mail = email.text.trim().toLowerCase();
     if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(mail) ||
         !RegExp(r'^\d{6}$').hasMatch(pin.text)) {
@@ -198,6 +404,9 @@ class _DigniV3AppState extends State<DigniV3App> {
           appVersion: '1.0.1',
         );
         remoteEvents = await client.events();
+        await sessions.markSynced();
+        lastSyncAt = await sessions.lastSyncAt;
+        online = true;
       }
 
       if (!mounted) return;
@@ -205,6 +414,13 @@ class _DigniV3AppState extends State<DigniV3App> {
         authed = true;
         busy = false;
         view = View.events;
+      });
+    } on DigniTwoFactorRequired catch (error) {
+      if (!mounted) return;
+      setState(() {
+        twoFactorChallenge = error.challengeId;
+        busy = false;
+        message = error.message;
       });
     } on DigniApiException catch (error) {
       if (!mounted) return;
@@ -218,6 +434,41 @@ class _DigniV3AppState extends State<DigniV3App> {
         busy = false;
         message = 'No fue posible conectar con DIGNI. Intenta nuevamente.';
       });
+    }
+  }
+
+  Future<void> _verifyTwoFactor() async {
+    final client = api;
+    final challenge = twoFactorChallenge;
+    if (client == null || challenge == null ||
+        !RegExp(r'^\d{6}$').hasMatch(twoFactorCode.text.trim())) {
+      setState(() => message = 'Ingresa un código de seis dígitos.');
+      return;
+    }
+    setState(() { busy = true; message = ''; });
+    try {
+      final deviceId = await sessions.ensureDeviceId();
+      await client.verify2fa(
+        challengeId: challenge,
+        code: twoFactorCode.text.trim(),
+        deviceId: deviceId,
+      );
+      remoteEvents = await client.events();
+      await sessions.markSynced();
+      if (!mounted) return;
+      setState(() {
+        twoFactorChallenge = null;
+        twoFactorCode.clear();
+        authed = true;
+        busy = false;
+        view = View.events;
+      });
+    } on DigniApiException catch (error) {
+      if (!mounted) return;
+      setState(() { busy = false; message = error.message; });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() { busy = false; message = 'No fue posible verificar el código.'; });
     }
   }
 
@@ -239,6 +490,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       remoteCaptures = const [];
       used.clear();
       pin.clear();
+      twoFactorCode.clear();
+      twoFactorChallenge = null;
       view = View.login;
     });
   }
@@ -262,13 +515,19 @@ class _DigniV3AppState extends State<DigniV3App> {
     try {
       if (api != null) {
         remoteSummary = await api!.summary(event.id, journeyId: journeyId);
+        await sessions.markSynced();
+        lastSyncAt = await sessions.lastSyncAt;
+        online = true;
       }
     } catch (_) {
       remoteSummary = const {};
+      online = false;
+      lastSyncAt = await sessions.lastSyncAt;
     }
     if (!mounted) return;
     setState(() => busy = false);
     go(event.isOwned ? View.own : View.external);
+    if (!preview && event.isOwned) unawaited(_loadPeople());
   }
 
   Future<void> _loadPeople() async {
@@ -283,9 +542,19 @@ class _DigniV3AppState extends State<DigniV3App> {
       );
       if (!mounted) return;
       setState(() => remotePeople = items);
+      if (search.isEmpty) {
+        await sessions.saveAttendeeCache(
+          event.id,
+          journeyId,
+          items.map((item) => item.toJson()).toList(),
+        );
+      }
+    } on DigniApiException catch (error) {
+      if (!mounted) return;
+      setState(() { message = error.message; online = true; });
     } catch (_) {
       if (!mounted) return;
-      setState(() => message = 'No pudimos cargar la lista de asistentes.');
+      setState(() { message = 'No pudimos cargar la lista de asistentes.'; online = false; });
     }
   }
 
@@ -297,9 +566,12 @@ class _DigniV3AppState extends State<DigniV3App> {
       final items = await client.captures(event.id, query: search);
       if (!mounted) return;
       setState(() => remoteCaptures = items);
+    } on DigniApiException catch (error) {
+      if (!mounted) return;
+      setState(() { message = error.message; online = true; });
     } catch (_) {
       if (!mounted) return;
-      setState(() => message = 'No pudimos cargar los contactos capturados.');
+      setState(() { message = 'No pudimos cargar los contactos capturados.'; online = false; });
     }
   }
 
@@ -320,8 +592,17 @@ class _DigniV3AppState extends State<DigniV3App> {
     final client = api;
     if (event == null || client == null || !event.isOwned) return;
 
+    await HapticFeedback.mediumImpact();
     setState(() => busy = true);
     try {
+      if (!online) {
+        final offline = await _offlineScan(raw);
+        if (offline != null) {
+          _showDecision(offline);
+          if (offline.tone == Tone.bad) await _rejectionFeedback();
+        }
+        return;
+      }
       final deviceId = await sessions.ensureDeviceId();
       final validation = await client.validate(
         eventId: event.id,
@@ -329,26 +610,44 @@ class _DigniV3AppState extends State<DigniV3App> {
         code: raw,
         deviceId: deviceId,
       );
-      if (validation.outcome == 'valid' && validation.ticketId != null) {
-        final checked = await client.checkIn(
-          eventId: event.id,
-          journeyId: journeyId,
-          ticketId: validation.ticketId!,
-          deviceId: deviceId,
-          idempotencyKey: _idempotencyKey(deviceId),
-        );
-        await _showServerDecision(checked);
+      if ((validation.outcome == 'valid' ||
+              validation.outcome == 'approved') &&
+          validation.ticketId != null) {
+        // Validation and registration are separate actions. Keep the result
+        // visible until the operator explicitly confirms the entry.
+        _showDecision(Decision(
+          Tone.warn,
+          validation.title.isEmpty ? 'Entrada válida' : validation.title,
+          validation.message.isEmpty
+              ? 'Confirma el ingreso para registrarlo.'
+              : '${validation.message} Confirma el ingreso para registrarlo.',
+          name: validation.name,
+          rut: validation.maskedRut,
+          ticketId: validation.ticketId,
+          confirmEntry: true,
+        ));
       } else {
         await _showServerDecision(validation);
       }
     } on DigniApiException catch (error) {
+      if (error.statusCode == null || !online) {
+        if (mounted) setState(() => online = false);
+        final offline = await _offlineScan(raw);
+        if (offline != null) {
+          _showDecision(offline);
+          if (offline.tone == Tone.bad) await _rejectionFeedback();
+        }
+        return;
+      }
       _showDecision(Decision(Tone.bad, 'No se pudo validar', error.message));
+      await _rejectionFeedback();
     } catch (_) {
-      _showDecision(const Decision(
-        Tone.bad,
-        'Sin respuesta del servidor',
-        'No se registró ningún acceso. Revisa la conexión e intenta de nuevo.',
-      ));
+      if (mounted) setState(() => online = false);
+      final offline = await _offlineScan(raw);
+      if (offline != null) {
+        _showDecision(offline);
+        if (offline.tone == Tone.bad) await _rejectionFeedback();
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -397,6 +696,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     } else if (value.outcome == 'already_used' ||
         value.outcome == 'other_journey' ||
         value.outcome == 'identity_mismatch' ||
+        value.outcome == 'identity_review' ||
         value.requiresSupervisor) {
       tone = Tone.warn;
     }
@@ -410,8 +710,13 @@ class _DigniV3AppState extends State<DigniV3App> {
       ticketId: value.ticketId,
       reenter: value.canReenter,
       supervisor: value.requiresSupervisor,
+      checkout: value.outcome == 'already_used',
     ));
-    if (tone == Tone.good) await _approvalFeedback();
+    if (tone == Tone.good) {
+      await _approvalFeedback();
+    } else if (tone == Tone.bad) {
+      await _rejectionFeedback();
+    }
   }
 
   void _showDecision(Decision result) {
@@ -419,10 +724,159 @@ class _DigniV3AppState extends State<DigniV3App> {
       decision = result;
       view = View.result;
     });
-    if (result.tone == Tone.good) {
-      autoReturn = Timer(const Duration(milliseconds: 3000), () {
-        if (mounted && view == View.result) go(View.own);
-      });
+  }
+
+  Future<void> confirmEntry() async {
+    final current = decision;
+    final event = selectedEvent;
+    final client = api;
+    if (current == null || !current.confirmEntry || event == null ||
+        current.ticketId == null) return;
+    final deviceId = await sessions.ensureDeviceId();
+    if (!online || client == null) {
+      await _queueOfflineOperation(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        action: 'checkin',
+        deviceId: deviceId,
+      );
+      _showDecision(Decision(
+        Tone.warn,
+        'Ingreso guardado sin conexión',
+        'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      final result = await client.checkIn(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        deviceId: deviceId,
+        idempotencyKey: _idempotencyKey(deviceId),
+      );
+      await _showServerDecision(result);
+    } on DigniApiException catch (error) {
+      if (error.statusCode == null || !online) {
+        await _queueOfflineOperation(
+          eventId: event.id,
+          journeyId: journeyId,
+          ticketId: current.ticketId!,
+          action: 'checkin',
+          deviceId: deviceId,
+        );
+        _showDecision(Decision(
+          Tone.warn,
+          'Ingreso guardado sin conexión',
+          'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+          name: current.name,
+          rut: current.rut,
+          ticketId: current.ticketId,
+        ));
+        return;
+      }
+      _showDecision(Decision(Tone.bad, 'No se pudo registrar', error.message));
+      await _rejectionFeedback();
+    } catch (_) {
+      await _queueOfflineOperation(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        action: 'checkin',
+        deviceId: deviceId,
+      );
+      _showDecision(Decision(
+        Tone.warn,
+        'Ingreso guardado sin conexión',
+        'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> confirmCheckout() async {
+    final current = decision;
+    final event = selectedEvent;
+    if (current == null || !current.checkout || event == null ||
+        current.ticketId == null) return;
+    final client = api;
+    final deviceId = await sessions.ensureDeviceId();
+    if (!online || client == null) {
+      await _queueOfflineOperation(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        action: 'checkout',
+        deviceId: deviceId,
+      );
+      _showDecision(Decision(
+        Tone.warn,
+        'Salida guardada sin conexión',
+        'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      final result = await client.checkout(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        deviceId: deviceId,
+        idempotencyKey: _idempotencyKey(deviceId),
+      );
+      await _showServerDecision(result);
+    } on DigniApiException catch (error) {
+      if (error.statusCode == null || !online) {
+        await _queueOfflineOperation(
+          eventId: event.id,
+          journeyId: journeyId,
+          ticketId: current.ticketId!,
+          action: 'checkout',
+          deviceId: deviceId,
+        );
+        _showDecision(Decision(
+          Tone.warn,
+          'Salida guardada sin conexión',
+          'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+          name: current.name,
+          rut: current.rut,
+          ticketId: current.ticketId,
+        ));
+        return;
+      }
+      _showDecision(Decision(Tone.bad, 'No se pudo registrar la salida', error.message));
+      await _rejectionFeedback();
+    } catch (_) {
+      await _queueOfflineOperation(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        action: 'checkout',
+        deviceId: deviceId,
+      );
+      _showDecision(Decision(
+        Tone.warn,
+        'Salida guardada sin conexión',
+        'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -445,11 +899,29 @@ class _DigniV3AppState extends State<DigniV3App> {
 
     final event = selectedEvent;
     final client = api;
-    if (event == null || client == null || current.ticketId == null) return;
+    if (event == null || current.ticketId == null) return;
+    final deviceId = await sessions.ensureDeviceId();
+    if (!online || client == null) {
+      await _queueOfflineOperation(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        action: 'reentry',
+        deviceId: deviceId,
+      );
+      _showDecision(Decision(
+        Tone.warn,
+        'Reingreso guardado sin conexión',
+        'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
+      return;
+    }
 
     setState(() => busy = true);
     try {
-      final deviceId = await sessions.ensureDeviceId();
       final result = await client.checkIn(
         eventId: event.id,
         journeyId: journeyId,
@@ -460,7 +932,42 @@ class _DigniV3AppState extends State<DigniV3App> {
       );
       await _showServerDecision(result);
     } on DigniApiException catch (error) {
+      if (error.statusCode == null || !online) {
+        await _queueOfflineOperation(
+          eventId: event.id,
+          journeyId: journeyId,
+          ticketId: current.ticketId!,
+          action: 'reentry',
+          deviceId: deviceId,
+        );
+        _showDecision(Decision(
+          Tone.warn,
+          'Reingreso guardado sin conexión',
+          'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+          name: current.name,
+          rut: current.rut,
+          ticketId: current.ticketId,
+        ));
+        return;
+      }
       _showDecision(Decision(Tone.bad, 'No se pudo registrar', error.message));
+      await _rejectionFeedback();
+    } catch (_) {
+      await _queueOfflineOperation(
+        eventId: event.id,
+        journeyId: journeyId,
+        ticketId: current.ticketId!,
+        action: 'reentry',
+        deviceId: deviceId,
+      );
+      _showDecision(Decision(
+        Tone.warn,
+        'Reingreso guardado sin conexión',
+        'Quedó pendiente de sincronización. Se enviará al recuperar internet.',
+        name: current.name,
+        rut: current.rut,
+        ticketId: current.ticketId,
+      ));
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -471,6 +978,16 @@ class _DigniV3AppState extends State<DigniV3App> {
     try {
       await player.stop();
       await player.play(AssetSource('sounds/check.wav'), volume: 0.9);
+    } catch (_) {
+      await SystemSound.play(SystemSoundType.click);
+    }
+  }
+
+  Future<void> _rejectionFeedback() async {
+    await HapticFeedback.heavyImpact();
+    try {
+      await player.stop();
+      await SystemSound.play(SystemSoundType.alert);
     } catch (_) {
       await SystemSound.play(SystemSoundType.click);
     }
@@ -570,7 +1087,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         style: TextStyle(
           fontSize: isOwn ? 9 : 8,
           fontWeight: FontWeight.w900,
-          color: isOwn ? const Color(0xFFC6263B) : deep,
+          color: isOwn ? brandRed : deep,
         ),
       ),
     );
@@ -578,6 +1095,30 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Widget content(List<Widget> items) => ListView(
     padding: const EdgeInsets.fromLTRB(20, 18, 20, 26), children: items);
+
+  String _offlineLabel() {
+    final value = lastSyncAt;
+    final pending = pendingOperations > 0 ? ' · $pendingOperations pendiente(s)' : '';
+    if (value == null) return 'Sin conexión · todavía no hay una sincronización registrada$pending';
+    final local = value.toLocal();
+    final hh = local.hour.toString().padLeft(2, '0');
+    final mm = local.minute.toString().padLeft(2, '0');
+    final dd = local.day.toString().padLeft(2, '0');
+    final mo = local.month.toString().padLeft(2, '0');
+    return 'Sin conexión · datos hasta las $hh:$mm del $dd/$mo/${local.year}$pending';
+  }
+
+  Widget _offlineBanner() => Container(
+    width: double.infinity,
+    color: dark ? const Color(0xFF3D3017) : const Color(0xFFFFF2D9),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+    child: Row(children: [
+      Icon(Icons.cloud_off_rounded, size: 17, color: statusInk(amber)),
+      const SizedBox(width: 8),
+      Expanded(child: Text(_offlineLabel(), style: TextStyle(
+        color: statusInk(amber), fontSize: 11, fontWeight: FontWeight.w800))),
+    ]),
+  );
 
   Widget _drawer() {
     final eventTitle = preview
@@ -642,6 +1183,17 @@ class _DigniV3AppState extends State<DigniV3App> {
                   Navigator.pop(context);
                   go(View.captures);
                 }),
+              drawerItem(
+                Icons.sync_rounded,
+                pendingOperations > 0
+                    ? 'Sincronizar ($pendingOperations)'
+                    : 'Sincronizar',
+                () {
+                  Navigator.pop(context);
+                  unawaited(_manualSync());
+                },
+                color: pendingOperations > 0 ? amber : null,
+              ),
               drawerItem(
                 dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
                 dark ? 'Modo claro' : 'Modo oscuro',
@@ -715,6 +1267,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         ],
       ),
       body: SafeArea(child: Column(children: [
+        if (!preview && !online) _offlineBanner(),
         if (preview)
           Container(
             width: double.infinity,
@@ -858,6 +1411,15 @@ class _DigniV3AppState extends State<DigniV3App> {
         onSubmitted: (_) => authenticate(),
         decoration: const InputDecoration(labelText: 'PIN de seis dígitos',
           counterText: '', prefixIcon: Icon(Icons.lock_outline_rounded))),
+      if (twoFactorChallenge != null) ...[
+        const SizedBox(height: 12),
+        TextField(controller: twoFactorCode, autofocus: true,
+          maxLength: 6, keyboardType: TextInputType.number,
+          onSubmitted: (_) => authenticate(),
+          decoration: const InputDecoration(
+            labelText: 'Código de autenticación',
+            counterText: '', prefixIcon: Icon(Icons.verified_user_outlined))),
+      ],
       if (message.isNotEmpty) Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: Text(message, style: TextStyle(color: statusInk(red), fontSize: 12))),
@@ -865,7 +1427,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       FilledButton(onPressed: busy ? null : authenticate,
         child: busy ? const SizedBox(width: 20, height: 20,
           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-          : const Text('Ingresar a DIGNI')),
+          : Text(twoFactorChallenge == null
+              ? 'Ingresar a DIGNI' : 'Verificar código')),
     ])),
     if (preview) ...[
       const SizedBox(height: 20),
@@ -923,10 +1486,17 @@ class _DigniV3AppState extends State<DigniV3App> {
           )),
         ]),
         const SizedBox(height: 18),
-        badge(
-          event.isOwned ? 'CONTROL DE ACCESOS' : 'CAPTACIÓN',
-          tint, actionInk,
-        ),
+        Row(children: [
+          if (event.isOwned) ...[
+            Icon(event.isOpen ? Icons.check_circle_rounded : Icons.lock_outline,
+              color: event.isOpen ? good : statusInk(red), size: 18),
+            const SizedBox(width: 6),
+          ],
+          badge(event.isOwned
+              ? (event.isOpen ? 'JORNADA ABIERTA' : 'JORNADA CERRADA')
+              : 'CAPTACIÓN',
+            tint, actionInk),
+        ]),
         if (event.dateLabel.isNotEmpty) ...[
           const SizedBox(height: 18),
           sub(event.dateLabel),
@@ -988,7 +1558,14 @@ class _DigniV3AppState extends State<DigniV3App> {
         Row(children: [
           logo(true, logoUrl: selectedEvent?.logoUrl),
           const SizedBox(width: 12),
-          badge('JORNADA ABIERTA', const Color(0xFFF4F4F5), const Color(0xFF232323)),
+          Icon(selectedEvent?.isOpen == false
+              ? Icons.lock_outline : Icons.check_circle_rounded,
+            color: selectedEvent?.isOpen == false ? statusInk(red) : good,
+            size: 20),
+          const SizedBox(width: 6),
+          badge(selectedEvent?.isOpen == false
+              ? 'JORNADA CERRADA' : 'JORNADA ABIERTA',
+            const Color(0xFFF4F4F5), const Color(0xFF232323)),
         ]),
         const SizedBox(height: 27),
         Text(titleText, style: const TextStyle(
@@ -1020,7 +1597,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       ])),
       const SizedBox(height: 21),
       FilledButton.icon(
-        onPressed: () => go(View.scanner),
+        onPressed: selectedEvent?.isOpen == false ? null : () => go(View.scanner),
         icon: const Icon(Icons.qr_code_scanner_rounded),
         label: const Text('Validar acceso'),
       ),
@@ -1146,12 +1723,13 @@ class _DigniV3AppState extends State<DigniV3App> {
         ],
       ),
       body: SafeArea(child: Column(children: [
+        if (!preview && !online) _offlineBanner(),
         if (preview)
           const Padding(
             padding: EdgeInsets.all(8),
             child: Text(
               'PREVIEW · NO SON ENTRADAS REALES',
-              style: TextStyle(color: Color(0xFFF4C15C), fontSize: 10),
+              style: TextStyle(color: amber, fontSize: 10),
             ),
           ),
         Expanded(
@@ -1160,6 +1738,11 @@ class _DigniV3AppState extends State<DigniV3App> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(26),
               child: MobileScanner(
+                formats: const [
+                  BarcodeFormat.qrCode,
+                  BarcodeFormat.pdf417,
+                  BarcodeFormat.dataMatrix,
+                ],
                 onDetect: (capture) {
                   if (busy || view != View.scanner || capture.barcodes.isEmpty) {
                     return;
@@ -1231,7 +1814,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           decoration: BoxDecoration(shape: BoxShape.circle,
             color: col.withValues(alpha: .19)),
           child: CircleAvatar(radius: 54, backgroundColor: col,
-            child: Icon(glyph, color: r.tone == Tone.bad ? Colors.white : spaceDark, size: 53)))),
+            child: Icon(glyph, color: Colors.white, size: 53)))),
       const SizedBox(height: 24),
       Center(child: title(r.title)), const SizedBox(height: 11),
       Center(child: sub(r.message)),
@@ -1259,6 +1842,18 @@ class _DigniV3AppState extends State<DigniV3App> {
         )),
       ],
       const SizedBox(height: 21),
+      if (r.confirmEntry) FilledButton(
+        onPressed: busy ? null : confirmEntry,
+        child: const Text('Confirmar ingreso'),
+      ),
+      if (r.checkout) ...[
+        FilledButton.icon(
+          onPressed: busy ? null : confirmCheckout,
+          icon: const Icon(Icons.logout_rounded),
+          label: const Text('Registrar salida'),
+        ),
+        const SizedBox(height: 9),
+      ],
       if (r.reenter) FilledButton(
         onPressed: busy ? null : confirmReentry,
         child: const Text('Confirmar reingreso'),
@@ -1456,12 +2051,14 @@ class _DigniV3AppState extends State<DigniV3App> {
               sub('Toca una persona para revisar su historial.'),
               const SizedBox(height: 19),
               TextField(
+                controller: searchController,
+                textInputAction: TextInputAction.search,
                 onChanged: (value) {
                   setState(() => search = value);
                   if (!preview) unawaited(_loadPeople());
                 },
                 decoration: const InputDecoration(
-                  hintText: 'Nombre o RUT',
+                  hintText: 'Nombre, RUT o número de entrada',
                   prefixIcon: Icon(Icons.search_rounded),
                 ),
               ),
@@ -1533,7 +2130,8 @@ class _DigniV3AppState extends State<DigniV3App> {
                                 Text(person.name, style: TextStyle(
                                   color: ink, fontWeight: FontWeight.w800)),
                                 const SizedBox(height: 5),
-                                sub('RUT ${person.maskedRut}'),
+                                sub('RUT ${person.maskedRut}'
+                                    '${person.entryNumber == null ? '' : ' · Entrada ${person.entryNumber}'}'),
                               ],
                             )),
                             attendeeBadge(_humanStatus(person.status)),
