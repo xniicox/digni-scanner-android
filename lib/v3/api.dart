@@ -471,7 +471,7 @@ class DigniApi {
     required String deviceId,
     required String idempotencyKey,
   }) async {
-    await _request('POST', '/tickets/$ticketId/assign', body: {
+    final assignment = await _request('POST', '/tickets/$ticketId/assign', body: {
       'ticket_id': ticketId,
       'name': name,
       'rut': rut,
@@ -483,6 +483,10 @@ class DigniApi {
       'document_country': 'CL',
       'document_number': rut,
     });
+    if (assignment['complete'] == false) {
+      throw DigniApiException(
+        'La entrada todavía tiene datos pendientes. Revisa nombre, RUT y correo antes de registrar el ingreso.');
+    }
     final json = await _request('POST', '/check-in', body: {
       'event_id': eventId,
       if (journeyId != null) 'journey_id': journeyId,
