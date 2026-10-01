@@ -47,6 +47,6 @@ La configuración Android de cámara e Internet se añade mediante el workflow. 
 
 ## Seguridad y requisitos para producción
 
-El modo productivo usa `DIGNI_API_BASE=https://makita.cl` y agrega internamente `/wp-json/digni-scanner/v1/`. La sesión se guarda de forma segura, se renueva con refresh token y la aplicación muestra la última sincronización cuando pierde conectividad. El dispositivo debe estar autorizado por el plugin. Las operaciones offline se sincronizan con `POST /sync`; la salida online usa `POST /check-out` y la app consulta `GET /device-status` para conocer la ventana disponible.
+El modo productivo usa `DIGNI_API_BASE=https://makita.cl` y agrega internamente `/wp-json/digni-scanner/v1/`. La sesión se guarda de forma segura, se renueva con refresh token y la aplicación muestra la última sincronización cuando pierde conectividad. El dispositivo debe estar autorizado por DIGNI E-TICKET 3.8.1. Las operaciones offline se sincronizan con `POST /sync`; la salida online usa `POST /check-out` y la app consulta `GET /device-status` para conocer la ventana disponible.
 
 Figma permite recorrer transiciones; la versión HTML descargable permite login y simulaciones en navegador. Este APK es para revisión interna en Android.
