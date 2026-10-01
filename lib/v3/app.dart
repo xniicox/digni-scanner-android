@@ -847,8 +847,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       rut: value.maskedRut,
       ticketId: value.ticketId,
       reenter: value.canReenter,
-      supervisor: value.requiresSupervisor && value.ticketId != null,
-      courtesy: value.requiresSupervisor && value.ticketId == null,
+      supervisor: false,
+      courtesy: value.requiresSupervisor,
       checkout: value.outcome == 'already_used',
       entryNumber: value.entryNumber,
     ));
