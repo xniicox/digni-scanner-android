@@ -925,7 +925,10 @@ class _DigniV3AppState extends State<DigniV3App> {
         value.outcome == 'checked_in' ||
         value.outcome == 'reentry_approved') {
       tone = Tone.good;
-    } else if (value.outcome == 'already_used' ||
+    } else if (value.outcome == 'pending_data' ||
+        value.needsData ||
+        value.courtesy ||
+        value.outcome == 'already_used' ||
         value.outcome == 'other_journey' ||
         value.outcome == 'identity_mismatch' ||
         value.outcome == 'identity_review' ||
