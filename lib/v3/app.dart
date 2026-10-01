@@ -63,6 +63,8 @@ class _DigniV3AppState extends State<DigniV3App> {
   final pin = TextEditingController();
   final searchController = TextEditingController();
   final twoFactorCode = TextEditingController();
+  final peopleSearchFocus = FocusNode();
+  final scaffoldKey = GlobalKey<ScaffoldState>();
 
   late final DigniApi? api = apiBase.trim().isEmpty
       ? null
@@ -84,16 +86,66 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   List<DigniEvent> remoteEvents = const [];
   DigniEvent? selectedEvent;
+  Map<String, dynamic>? selectedJourney;
+  final Map<int, int?> journeyChoices = {};
   Map<String, dynamic> remoteSummary = const {};
   List<DigniAttendee> remotePeople = const [];
   List<Map<String, dynamic>> remoteCaptures = const [];
+  Timer? searchDebounce;
+  int peopleRequest = 0;
+  bool peopleLoading = false;
+  bool syncing = false;
 
   int? get journeyId {
-    final event = selectedEvent;
-    if (event == null || event.journeys.isEmpty) return null;
-    final value = event.journeys.first['id'];
+    final value = selectedJourney?['id'];
     if (value is num) return value.toInt();
     return int.tryParse(value?.toString() ?? '');
+  }
+
+  String _dateKey(DateTime value) =>
+      '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+
+  int? _journeyMapId(Map<String, dynamic> journey) {
+    final value = journey['id'];
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  bool _journeyIsToday(Map<String, dynamic> journey) {
+    final raw = journey['date']?.toString() ?? '';
+    if (raw.isEmpty) return false;
+    final parsed = DateTime.tryParse(raw);
+    return parsed != null && _dateKey(parsed.toLocal()) == _dateKey(DateTime.now());
+  }
+
+  int? _todayJourneyId(DigniEvent event) {
+    for (final journey in event.journeys) {
+      if (journey['enabled'] == false) continue;
+      if (_journeyIsToday(journey)) return _journeyMapId(journey);
+    }
+    return null;
+  }
+
+  bool _hasTodayJourney(DigniEvent event) => _todayJourneyId(event) != null;
+
+  bool _eventAvailableToday(DigniEvent event) =>
+      !event.isOwned || (event.isOpen && _hasTodayJourney(event));
+
+  String _journeyLabel(Map<String, dynamic> journey) {
+    final date = journey['date']?.toString() ?? 'Fecha por confirmar';
+    final starts = journey['starts']?.toString() ?? '';
+    final ends = journey['ends']?.toString() ?? '';
+    final name = journey['name']?.toString() ?? '';
+    final range = [starts, ends].where((value) => value.isNotEmpty).join(' – ');
+    return [name, date, range].where((value) => value.isNotEmpty).join(' · ');
+  }
+
+  Map<String, dynamic>? _journeyForId(DigniEvent event, int? id) {
+    if (id == null) return null;
+    for (final journey in event.journeys) {
+      if (_journeyMapId(journey) == id) return journey;
+    }
+    return null;
   }
 
   Color get bg => dark ? spaceDark : const Color(0xFFF7F7F8);
@@ -188,16 +240,23 @@ class _DigniV3AppState extends State<DigniV3App> {
       }
       return;
     }
-    setState(() => busy = true);
+    setState(() {
+      busy = true;
+      syncing = true;
+    });
     await _refreshRemoteData();
     if (mounted) {
-      setState(() => busy = false);
+      setState(() {
+        busy = false;
+        syncing = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(pendingOperations == 0
             ? 'Sincronización completada.'
             : '$pendingOperations operación(es) siguen pendientes.'),
       ));
     }
+    if (!mounted) syncing = false;
   }
 
   Future<void> _queueOfflineOperation({
@@ -343,12 +402,14 @@ class _DigniV3AppState extends State<DigniV3App> {
   void dispose() {
     autoReturn?.cancel();
     refreshTimer?.cancel();
+    searchDebounce?.cancel();
     connectivitySubscription?.cancel();
     scannerController.dispose();
     player.dispose();
     email.dispose();
     pin.dispose();
     searchController.dispose();
+    peopleSearchFocus.dispose();
     twoFactorCode.dispose();
     super.dispose();
   }
@@ -358,6 +419,10 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (!authed && next != View.login && next != View.splash) next = View.login;
     if (!own && (next == View.scanner || next == View.people)) next = View.external;
     if (own && next == View.captures) next = View.own;
+    if (own && next == View.scanner &&
+        (selectedEvent == null || !_eventAvailableToday(selectedEvent!))) {
+      next = View.own;
+    }
     setState(() {
       view = next;
       message = '';
@@ -492,6 +557,8 @@ class _DigniV3AppState extends State<DigniV3App> {
     setState(() {
       authed = false;
       selectedEvent = null;
+      selectedJourney = null;
+      journeyChoices.clear();
       remoteEvents = const [];
       remoteSummary = const {};
       remotePeople = const [];
@@ -508,18 +575,28 @@ class _DigniV3AppState extends State<DigniV3App> {
     setState(() {
       own = isOwned;
       selectedEvent = null;
+      selectedJourney = null;
       remoteSummary = const {};
     });
     go(isOwned ? View.own : View.external);
   }
 
   Future<void> selectRemoteEvent(DigniEvent event) async {
+    final chosenId = journeyChoices[event.id] ?? _todayJourneyId(event);
     setState(() {
       selectedEvent = event;
+      selectedJourney = _journeyForId(event, chosenId);
+      journeyChoices[event.id] = chosenId;
       own = event.isOwned;
       busy = true;
       remoteSummary = const {};
     });
+    if (event.isOwned && !_eventAvailableToday(event)) {
+      if (!mounted) return;
+      setState(() => busy = false);
+      go(View.own);
+      return;
+    }
     try {
       if (api != null) {
         remoteSummary = await api!.summary(event.id, journeyId: journeyId);
@@ -542,14 +619,19 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     final client = api;
     if (preview || event == null || client == null || !event.isOwned) return;
+    final request = ++peopleRequest;
+    if (mounted) setState(() => peopleLoading = true);
     try {
       final items = await client.attendees(
         event.id,
         journeyId: journeyId,
         query: search,
       );
-      if (!mounted) return;
-      setState(() => remotePeople = items);
+      if (!mounted || request != peopleRequest) return;
+      setState(() {
+        remotePeople = items;
+        peopleLoading = false;
+      });
       if (search.isEmpty) {
         await sessions.saveAttendeeCache(
           event.id,
@@ -558,11 +640,11 @@ class _DigniV3AppState extends State<DigniV3App> {
         );
       }
     } on DigniApiException catch (error) {
-      if (!mounted) return;
-      setState(() { message = error.message; online = true; });
+      if (!mounted || request != peopleRequest) return;
+      setState(() { message = error.message; online = true; peopleLoading = false; });
     } catch (_) {
-      if (!mounted) return;
-      setState(() { message = 'No pudimos cargar la lista de asistentes.'; online = false; });
+      if (!mounted || request != peopleRequest) return;
+      setState(() { message = 'No pudimos cargar la lista de asistentes.'; online = false; peopleLoading = false; });
     }
   }
 
@@ -590,6 +672,11 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Future<void> _scan(String raw) async {
     if (!authed || !own || view != View.scanner || busy) return;
+    if (selectedEvent == null || !_eventAvailableToday(selectedEvent!)) {
+      _showDecision(const Decision(Tone.bad, 'Evento cerrado',
+        'No puedes escanear ni modificar la bitácora fuera de la jornada de hoy.'));
+      return;
+    }
 
     if (preview) {
       _checkPreview(raw);
@@ -739,7 +826,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     final client = api;
     if (current == null || !current.confirmEntry || event == null ||
-        current.ticketId == null) return;
+        current.ticketId == null || !_eventAvailableToday(event)) return;
     final deviceId = await sessions.ensureDeviceId();
     if (!online || client == null) {
       await _queueOfflineOperation(
@@ -815,7 +902,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final current = decision;
     final event = selectedEvent;
     if (current == null || !current.checkout || event == null ||
-        current.ticketId == null) return;
+        current.ticketId == null || !_eventAvailableToday(event)) return;
     final client = api;
     final deviceId = await sessions.ensureDeviceId();
     if (!online || client == null) {
@@ -907,7 +994,7 @@ class _DigniV3AppState extends State<DigniV3App> {
 
     final event = selectedEvent;
     final client = api;
-    if (event == null || current.ticketId == null) return;
+    if (event == null || current.ticketId == null || !_eventAvailableToday(event)) return;
     final deviceId = await sessions.ensureDeviceId();
     if (!online || client == null) {
       await _queueOfflineOperation(
@@ -1173,23 +1260,23 @@ class _DigniV3AppState extends State<DigniV3App> {
               ])),
               const SizedBox(height: 16),
               drawerItem(Icons.event_outlined, 'Mis eventos', () {
-                Navigator.pop(context);
-                go(View.events);
+                Navigator.of(context).pop();
+                WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) go(View.events); });
               }),
               if (eventTitle != null)
-                drawerItem(Icons.home_outlined, eventTitle, () {
-                  Navigator.pop(context);
-                  go(own ? View.own : View.external);
+                drawerItem(Icons.home_outlined, 'Evento activo', () {
+                  Navigator.of(context).pop();
+                WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) go(own ? View.own : View.external); });
                 }),
               if (own)
                 drawerItem(Icons.people_outline, 'Asistentes', () {
-                  Navigator.pop(context);
-                  go(View.people);
+                  Navigator.of(context).pop();
+                  WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) go(View.people); });
                 }),
               if (!own)
                 drawerItem(Icons.query_stats_rounded, 'Contactos capturados', () {
-                  Navigator.pop(context);
-                  go(View.captures);
+                  Navigator.of(context).pop();
+                  WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) go(View.captures); });
                 }),
               drawerItem(
                 Icons.sync_rounded,
@@ -1197,8 +1284,8 @@ class _DigniV3AppState extends State<DigniV3App> {
                     ? 'Sincronizar ($pendingOperations)'
                     : 'Sincronizar',
                 () {
-                  Navigator.pop(context);
-                  unawaited(_manualSync());
+                  Navigator.of(context).pop();
+                  WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) unawaited(_manualSync()); });
                 },
                 color: pendingOperations > 0 ? amber : null,
               ),
@@ -1206,19 +1293,19 @@ class _DigniV3AppState extends State<DigniV3App> {
                 dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
                 dark ? 'Modo claro' : 'Modo oscuro',
                 () {
-                  Navigator.pop(context);
-                  setState(() => dark = !dark);
+                  Navigator.of(context).pop();
+                  WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) setState(() => dark = !dark); });
                 },
               ),
               drawerItem(Icons.person_outline, 'Mi cuenta', () {
-                Navigator.pop(context);
-                go(View.account);
+                Navigator.of(context).pop();
+                WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) go(View.account); });
               }),
               const Spacer(),
               const Divider(),
               drawerItem(Icons.logout_rounded, 'Cerrar sesión', () {
-                Navigator.pop(context);
-                unawaited(logout());
+                Navigator.of(context).pop();
+                WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) unawaited(logout()); });
               }, color: red),
             ],
           ),
@@ -1229,7 +1316,6 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Widget shell(Widget body,
       {bool back = false, bool nav = false, String active = ''}) {
-    final scaffoldKey = GlobalKey<ScaffoldState>();
     return Scaffold(
       key: scaffoldKey,
       drawer: authed ? _drawer() : null,
@@ -1276,6 +1362,19 @@ class _DigniV3AppState extends State<DigniV3App> {
       ),
       body: SafeArea(child: Column(children: [
         if (!preview && !online) _offlineBanner(),
+        if (syncing)
+          Container(
+            width: double.infinity,
+            color: dark ? const Color(0xFF35141E) : const Color(0xFFFDE7EC),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+            child: Row(children: [
+              const SizedBox(width: 16, height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2, color: brandRed)),
+              const SizedBox(width: 10),
+              Text('Sincronizando con DIGNI…', style: TextStyle(
+                color: actionInk, fontWeight: FontWeight.w800, fontSize: 12)),
+            ]),
+          ),
         if (preview)
           Container(
             width: double.infinity,
@@ -1368,26 +1467,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Image.asset(
-                'assets/brand/icono-digni.png',
-                width: 188,
-                height: 188,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Container(
-                  height: 164,
-                  width: 164,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFDF002E),
-                    borderRadius: BorderRadius.circular(46),
-                  ),
-                  child: const Text('DIGNI', style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 33,
-                    fontWeight: FontWeight.w900,
-                  )),
-                ),
-              ),
+              brand(light: true, width: 220),
               const SizedBox(height: 68),
               const SizedBox(
                 width: 106,
@@ -1473,54 +1553,71 @@ class _DigniV3AppState extends State<DigniV3App> {
     ])),
   );
 
-  Widget remoteEventCard(DigniEvent event) => Padding(
-    padding: const EdgeInsets.only(top: 14),
-    child: panel(Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+  Widget remoteEventCard(DigniEvent event) {
+    final todayId = _todayJourneyId(event);
+    final chosenId = journeyChoices.containsKey(event.id)
+        ? journeyChoices[event.id] : todayId;
+    final available = !event.isOwned ||
+        (event.isOpen && todayId != null && chosenId == todayId);
+    final metadata = <String>[
+      if (event.dateLabel.isNotEmpty) event.dateLabel,
+      '${event.journeys.length} jornada${event.journeys.length == 1 ? '' : 's'}',
+      if (event.commune.isNotEmpty) event.commune,
+      if (event.region.isNotEmpty) event.region,
+      if (event.location.isNotEmpty && event.commune.isEmpty) event.location,
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           logo(event.isOwned, logoUrl: event.logoUrl),
           const SizedBox(width: 12),
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(event.title, style: TextStyle(
-                color: ink, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 5),
-              sub(event.isOwned
-                  ? '${event.organizer} · Evento propio'
-                  : 'Makita · Marca participante'),
-            ],
-          )),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(event.title, style: TextStyle(color: ink, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 5),
+            sub(event.isOwned ? '${event.organizer} · Evento propio' : 'Makita · Marca participante'),
+          ])),
+          Icon(available ? Icons.check_circle_rounded : Icons.lock_outline,
+            color: available ? good : statusInk(red), size: 21),
         ]),
-        const SizedBox(height: 18),
+        const SizedBox(height: 15),
         Row(children: [
-          if (event.isOwned) ...[
-            Icon(event.isOpen ? Icons.check_circle_rounded : Icons.lock_outline,
-              color: event.isOpen ? good : statusInk(red), size: 18),
-            const SizedBox(width: 6),
-          ],
+          Icon(available ? Icons.event_available_rounded : Icons.event_busy_rounded,
+            color: available ? statusInk(good) : statusInk(red), size: 17),
+          const SizedBox(width: 6),
           badge(event.isOwned
-              ? (event.isOpen ? 'JORNADA ABIERTA' : 'JORNADA CERRADA')
+              ? (available ? 'JORNADA ABIERTA' : 'EVENTO CERRADO')
               : 'CAPTACIÓN',
-            tint, actionInk),
+            available ? const Color(0xFFE6F6EC) : const Color(0xFFFFE7E5),
+            available ? statusInk(good) : statusInk(red)),
         ]),
-        if (event.dateLabel.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          sub(event.dateLabel),
+        if (event.journeys.isNotEmpty) ...[
+          const SizedBox(height: 13),
+          Text('Jornada', style: TextStyle(color: muted, fontSize: 11, fontWeight: FontWeight.w700)),
+          DropdownButton<int>(
+            isExpanded: true,
+            value: event.journeys.any((j) => _journeyMapId(j) == chosenId) ? chosenId : null,
+            hint: Text(todayId == null ? 'No hay jornada para hoy' : 'Selecciona una jornada',
+              style: TextStyle(color: muted, fontSize: 13)),
+            items: [for (final journey in event.journeys)
+              if (_journeyMapId(journey) != null)
+                DropdownMenuItem<int>(value: _journeyMapId(journey), child: Text(_journeyLabel(journey)))],
+            onChanged: (value) => setState(() => journeyChoices[event.id] = value),
+          ),
         ],
-        if (event.location.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          sub(event.location),
-        ],
-        const SizedBox(height: 18),
-        FilledButton(
-          onPressed: () => selectRemoteEvent(event),
-          child: Text(event.isOwned ? 'Abrir jornada' : 'Ver captación'),
+        const SizedBox(height: 4),
+        for (final item in metadata) Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: sub(item),
         ),
-      ],
-    )),
-  );
+        const SizedBox(height: 17),
+        SizedBox(width: double.infinity, child: FilledButton(
+          onPressed: available ? () => selectRemoteEvent(event) : null,
+          child: Text(event.isOwned ? (available ? 'Abrir jornada' : 'NO DISPONIBLE') : 'Ver captación'),
+        )),
+      ])),
+    );
+  }
 
   Widget events() => shell(content([
     const SizedBox(height: 19), label('EVENTOS DISPONIBLES'),
@@ -1566,13 +1663,13 @@ class _DigniV3AppState extends State<DigniV3App> {
         Row(children: [
           logo(true, logoUrl: selectedEvent?.logoUrl),
           const SizedBox(width: 12),
-          Icon(selectedEvent?.isOpen == false
+          Icon(selectedEvent == null || !_eventAvailableToday(selectedEvent!)
               ? Icons.lock_outline : Icons.check_circle_rounded,
-            color: selectedEvent?.isOpen == false ? statusInk(red) : good,
+            color: selectedEvent == null || !_eventAvailableToday(selectedEvent!) ? statusInk(red) : good,
             size: 20),
           const SizedBox(width: 6),
-          badge(selectedEvent?.isOpen == false
-              ? 'JORNADA CERRADA' : 'JORNADA ABIERTA',
+          badge(selectedEvent == null || !_eventAvailableToday(selectedEvent!)
+              ? 'EVENTO CERRADO' : 'JORNADA ABIERTA',
             const Color(0xFFF4F4F5), const Color(0xFF232323)),
         ]),
         const SizedBox(height: 27),
@@ -1605,7 +1702,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       ])),
       const SizedBox(height: 21),
       FilledButton.icon(
-        onPressed: selectedEvent?.isOpen == false ? null : () => go(View.scanner),
+        onPressed: selectedEvent == null || !_eventAvailableToday(selectedEvent!) ? null : () => go(View.scanner),
         icon: const Icon(Icons.qr_code_scanner_rounded),
         label: const Text('Validar acceso'),
       ),
@@ -1695,7 +1792,6 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   Widget scanner() {
-    final scaffoldKey = GlobalKey<ScaffoldState>();
     return Scaffold(
       key: scaffoldKey,
       backgroundColor: const Color(0xFF12242C),
@@ -1969,14 +2065,37 @@ class _DigniV3AppState extends State<DigniV3App> {
     );
   }
 
+  void _preparePersonAction(DigniAttendee person, String action) {
+    final event = selectedEvent;
+    if (event == null || !_eventAvailableToday(event)) return;
+    final alreadyIn = person.status == 'checked_in' || person.status == 'reentry';
+    final result = switch (action) {
+      'checkin' => Decision(
+          Tone.warn, 'Confirmar ingreso',
+          'Revisa los datos y confirma el ingreso de esta persona.',
+          name: person.name, rut: person.maskedRut, ticketId: person.id,
+          confirmEntry: !alreadyIn),
+      'checkout' => Decision(
+          Tone.warn, 'Registrar salida',
+          'Confirma que la persona está saliendo del evento.',
+          name: person.name, rut: person.maskedRut, ticketId: person.id,
+          checkout: alreadyIn),
+      _ => Decision(
+          Tone.warn, 'Confirmar reingreso',
+          'Confirma el reingreso de esta persona.',
+          name: person.name, rut: person.maskedRut, ticketId: person.id,
+          reenter: alreadyIn),
+    };
+    setState(() { decision = result; view = View.result; });
+  }
+
   Future<void> _showRemoteHistory(DigniAttendee person) async {
     final client = api;
     if (client == null) return;
-    setState(() => busy = true);
+    List<(IconData, String, String, Color)> entries = [];
     try {
       final history = await client.attendeeHistory(person.id);
-      if (!mounted) return;
-      final entries = history.map((item) {
+      entries = history.map((item) {
         final action = (item['action'] ?? 'event').toString();
         final outcome = (item['outcome'] ?? '').toString();
         final created = (item['created_at'] ?? '').toString();
@@ -1988,42 +2107,73 @@ class _DigniV3AppState extends State<DigniV3App> {
         } else if (action == 'checkin') {
           icon = Icons.login_rounded;
           color = good;
+        } else if (action == 'checkout') {
+          icon = Icons.logout_rounded;
+          color = amber;
         } else if (action == 'reentry') {
           icon = Icons.replay_rounded;
-        } else if (outcome.contains('denied') ||
-            outcome.contains('reject')) {
-          icon = Icons.block_rounded;
-          color = red;
         }
-        return (
-          icon,
-          (item['label'] ?? action).toString(),
-          created,
-          color,
-        );
+        return (icon, (item['label'] ?? action).toString(), created, color);
       }).toList();
-      await _historySheet(
-        personName: person.name,
-        rut: person.maskedRut,
-        entries: entries.isEmpty
-            ? <(IconData, String, String, Color)>[
-                (
-                  Icons.schedule_rounded,
-                  'Sin movimientos registrados',
-                  'No hay ingresos ni reingresos en el historial',
-                  muted,
-                ),
-              ]
-            : entries,
-      );
     } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('No pudimos cargar el historial.'),
-      ));
-    } finally {
-      if (mounted) setState(() => busy = false);
+      entries = [(Icons.cloud_off_rounded, 'Historial no disponible',
+        'No pudimos cargar la bitácora ahora.', amber)];
     }
+    if (!mounted) return;
+    if (entries.isEmpty) {
+      entries = [(Icons.schedule_rounded, 'Sin movimientos registrados',
+        'No hay ingresos ni reingresos en el historial.', muted)];
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(person.name, style: Theme.of(sheetContext).textTheme.titleLarge),
+            const SizedBox(height: 5),
+            Text('RUT ${person.maskedRut}${person.entryNumber == null ? '' : ' · Entrada ${person.entryNumber}'}',
+              style: TextStyle(color: muted, fontSize: 12)),
+            const SizedBox(height: 18),
+            for (var index = 0; index < entries.length; index++) Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                CircleAvatar(radius: 17,
+                  backgroundColor: entries[index].$4.withValues(alpha: .14),
+                  child: Icon(entries[index].$1, color: statusInk(entries[index].$4), size: 18)),
+                const SizedBox(width: 12),
+                Expanded(child: Padding(padding: const EdgeInsets.only(top: 2), child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(entries[index].$2, style: TextStyle(color: ink, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 3),
+                    sub(entries[index].$3),
+                    if (index != entries.length - 1) const SizedBox(height: 14),
+                  ],
+                ))),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Text('Acciones', style: TextStyle(color: ink, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 9),
+            if (person.status == 'pending') SizedBox(width: double.infinity, child: FilledButton.icon(
+              icon: const Icon(Icons.login_rounded), label: const Text('Registrar ingreso'),
+              onPressed: () { Navigator.pop(sheetContext); _preparePersonAction(person, 'checkin'); })),
+            if (person.status == 'checked_in' || person.status == 'reentry') ...[
+              SizedBox(width: double.infinity, child: FilledButton.icon(
+                icon: const Icon(Icons.logout_rounded), label: const Text('Registrar salida'),
+                onPressed: () { Navigator.pop(sheetContext); _preparePersonAction(person, 'checkout'); })),
+              const SizedBox(height: 8),
+              SizedBox(width: double.infinity, child: OutlinedButton.icon(
+                icon: const Icon(Icons.replay_rounded), label: const Text('Registrar reingreso'),
+                onPressed: () { Navigator.pop(sheetContext); _preparePersonAction(person, 'reentry'); })),
+            ],
+          ]),
+        ),
+      ),
+    );
   }
 
   String _humanStatus(String status) {
@@ -2056,10 +2206,16 @@ class _DigniV3AppState extends State<DigniV3App> {
               const SizedBox(height: 19),
               TextField(
                 controller: searchController,
+                focusNode: peopleSearchFocus,
                 textInputAction: TextInputAction.search,
                 onChanged: (value) {
                   setState(() => search = value);
-                  if (!preview) unawaited(_loadPeople());
+                  searchDebounce?.cancel();
+                  if (!preview) {
+                    searchDebounce = Timer(const Duration(milliseconds: 280), () {
+                      if (mounted) unawaited(_loadPeople());
+                    });
+                  }
                 },
                 decoration: const InputDecoration(
                   hintText: 'Nombre, RUT o número de entrada',
@@ -2106,12 +2262,12 @@ class _DigniV3AppState extends State<DigniV3App> {
                       ),
                   ]
                 : [
-                    if (busy)
+                    if (peopleLoading)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 30),
                         child: Center(child: CircularProgressIndicator()),
                       ),
-                    if (!busy && remotePeople.isEmpty)
+                    if (!peopleLoading && remotePeople.isEmpty)
                       panel(const Text('No hay asistentes para mostrar.')),
                     for (final person in remotePeople)
                       Padding(

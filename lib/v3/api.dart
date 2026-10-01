@@ -60,6 +60,8 @@ class DigniEvent {
     required this.organizer,
     required this.dateLabel,
     required this.location,
+    this.commune = '',
+    this.region = '',
     this.state = 'active',
     this.logoUrl,
     this.captureId,
@@ -72,6 +74,8 @@ class DigniEvent {
   final String organizer;
   final String dateLabel;
   final String location;
+  final String commune;
+  final String region;
   final String state;
   final String? logoUrl;
   final int? captureId;
@@ -87,6 +91,8 @@ class DigniEvent {
     organizer: (json['organizer'] ?? '').toString(),
     dateLabel: (json['date_label'] ?? '').toString(),
     location: (json['location'] ?? '').toString(),
+    commune: (json['commune'] ?? json['event_commune'] ?? '').toString(),
+    region: (json['region'] ?? '').toString(),
     state: (json['state'] ?? 'active').toString(),
     logoUrl: json['logo_url']?.toString(),
     captureId: (json['capture_id'] as num?)?.toInt(),
