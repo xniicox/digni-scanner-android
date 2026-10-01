@@ -54,7 +54,11 @@ jobs:
           PY
 
       - name: Remove generated template test
-        run: rm -rf test
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          Path('test/widget_test.dart').unlink(missing_ok=True)
+          PY
 
       - name: Fetch dependencies
         run: flutter pub get
@@ -63,7 +67,10 @@ jobs:
         run: dart run flutter_launcher_icons
 
       - name: Check Dart and Flutter code
-        run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/session_store.dart --no-fatal-infos --no-fatal-warnings
+        run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/civil_qr.dart lib/v3/session_store.dart test/civil_qr_test.dart --no-fatal-infos --no-fatal-warnings
+
+      - name: Test Chilean ID QR parsing
+        run: flutter test test/civil_qr_test.dart
 
       - name: Build production APK
         run: flutter build apk --release --dart-define=DIGNI_PREVIEW=false --dart-define=DIGNI_API_BASE=https://makita.cl
@@ -71,6 +78,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: digni-scanner-1.1.0-production
+          name: digni-scanner-1.1.1-production
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
