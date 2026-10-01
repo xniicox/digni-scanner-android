@@ -1,4 +1,4 @@
-name: Build DIGNI Scanner V3 Preview
+name: Build DIGNI Scanner Android
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - name: Checkout V3 preview
+      - name: Checkout DIGNI Scanner
         uses: actions/checkout@v4
 
       - name: Setup Flutter
@@ -31,6 +31,7 @@ jobs:
           requested = [
               ('android.permission.CAMERA', '    <uses-permission android:name="android.permission.CAMERA"/>'),
               ('android.permission.INTERNET', '    <uses-permission android:name="android.permission.INTERNET"/>'),
+              ('android.permission.VIBRATE', '    <uses-permission android:name="android.permission.VIBRATE"/>'),
           ]
           additions = [element for name, element in requested if name not in contents]
           if 'android.hardware.camera' not in contents:
@@ -44,6 +45,7 @@ jobs:
           manifest.write_text(contents)
           assert 'android.permission.CAMERA' in contents
           assert 'android.permission.INTERNET' in contents
+          assert 'android.permission.VIBRATE' in contents
           build = Path("android/app/build.gradle.kts")
           if build.exists():
               body = build.read_text()
@@ -56,6 +58,9 @@ jobs:
 
       - name: Fetch dependencies
         run: flutter pub get
+
+      - name: Generate official DIGNI launcher icon
+        run: dart run flutter_launcher_icons
 
       - name: Check Dart and Flutter code
         run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/session_store.dart --no-fatal-infos --no-fatal-warnings
