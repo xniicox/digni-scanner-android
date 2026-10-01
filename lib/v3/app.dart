@@ -52,6 +52,13 @@ class DigniV3App extends StatefulWidget {
 class _DigniV3AppState extends State<DigniV3App> {
   final SessionStore sessions = SessionStore();
   final AudioPlayer player = AudioPlayer();
+  final MobileScannerController scannerController = MobileScannerController(
+    formats: const [
+      BarcodeFormat.qrCode,
+      BarcodeFormat.pdf417,
+      BarcodeFormat.dataMatrix,
+    ],
+  );
   final email = TextEditingController();
   final pin = TextEditingController();
   final searchController = TextEditingController();
@@ -337,6 +344,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     autoReturn?.cancel();
     refreshTimer?.cancel();
     connectivitySubscription?.cancel();
+    scannerController.dispose();
     player.dispose();
     email.dispose();
     pin.dispose();
@@ -1738,11 +1746,7 @@ class _DigniV3AppState extends State<DigniV3App> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(26),
               child: MobileScanner(
-                formats: const [
-                  BarcodeFormat.qrCode,
-                  BarcodeFormat.pdf417,
-                  BarcodeFormat.dataMatrix,
-                ],
+                controller: scannerController,
                 onDetect: (capture) {
                   if (busy || view != View.scanner || capture.barcodes.isEmpty) {
                     return;
