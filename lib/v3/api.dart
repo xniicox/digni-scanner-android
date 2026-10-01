@@ -138,7 +138,7 @@ class DigniAttendee {
     status: (json['status'] ?? 'pending').toString(),
     checkedAt: json['checked_at']?.toString(),
     reentries: (json['reentries'] as num?)?.toInt() ?? 0,
-    entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['ticket_code'] ?? json['number'])?.toString(),
+    entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['ticket_code'] ?? json['number'] ?? json['code'])?.toString(),
     code: json['code']?.toString(),
   );
 
@@ -465,11 +465,23 @@ class DigniApi {
     required String deviceId,
     required String idempotencyKey,
   }) async {
+    await _request('POST', '/tickets/$ticketId/assign', body: {
+      'ticket_id': ticketId,
+      'name': name,
+      'rut': rut,
+      'email': email,
+      'phone': phone,
+      'region': region,
+      'commune': commune,
+      'document_type': 'rut',
+      'document_country': 'CL',
+      'document_number': rut,
+    });
     final json = await _request('POST', '/check-in', body: {
       'event_id': eventId,
       if (journeyId != null) 'journey_id': journeyId,
       'ticket_id': ticketId,
-      'action': 'courtesy',
+      'action': 'checkin',
       'name': name,
       'rut': rut,
       'email': email,

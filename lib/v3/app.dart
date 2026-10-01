@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -112,6 +113,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   String operatorName = 'Operador DIGNI';
   String operatorRole = 'operator';
   bool profileChanged = false;
+  String? _cachedDeviceName;
 
   int? get journeyId {
     final value = selectedJourney?['id'];
@@ -121,6 +123,25 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   String _dateKey(DateTime value) =>
       '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+
+  Future<String> _deviceName() async {
+    if (_cachedDeviceName != null && _cachedDeviceName!.isNotEmpty) {
+      return _cachedDeviceName!;
+    }
+    try {
+      final info = await DeviceInfoPlugin().androidInfo;
+      final maker = info.manufacturer.trim();
+      final model = info.model.trim();
+      final value = [maker, model]
+          .where((part) => part.isNotEmpty)
+          .join(' ')
+          .trim();
+      _cachedDeviceName = value.isEmpty ? 'Android' : value;
+    } catch (_) {
+      _cachedDeviceName = 'Android';
+    }
+    return _cachedDeviceName!;
+  }
 
   int? _journeyMapId(Map<String, dynamic> journey) {
     final value = journey['id'];
@@ -536,8 +557,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           email: mail,
           pin: pin.text,
           deviceId: deviceId,
-          deviceName: 'Android',
-          appVersion: '1.0.1',
+          deviceName: await _deviceName(),
+          appVersion: '1.1.0',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
@@ -838,7 +859,16 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   String _displayAccessTime(String raw) {
-    final parsed = DateTime.tryParse(raw.replaceFirst(' ', 'T'))?.toLocal();
+    var value = raw.trim().replaceFirst(' ', 'T');
+    // WordPress stores audit/access timestamps in UTC without an offset.
+    // Treat that explicit server format as UTC, then let Android apply the
+    // device timezone (including Santiago summer/winter changes).
+    if (value.isNotEmpty &&
+        !value.endsWith('Z') &&
+        !RegExp(r'[+-]\d{2}:?\d{2}$').hasMatch(value)) {
+      value = '${value}Z';
+    }
+    final parsed = DateTime.tryParse(value)?.toLocal();
     if (parsed == null) return raw;
     final hh = parsed.hour.toString().padLeft(2, '0');
     final mm = parsed.minute.toString().padLeft(2, '0');
