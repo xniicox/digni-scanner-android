@@ -68,6 +68,7 @@ class DigniEvent {
     this.state = 'active',
     this.logoUrl,
     this.captureId,
+    this.captureCount = 0,
     this.journeys = const [],
   });
 
@@ -82,6 +83,7 @@ class DigniEvent {
   final String state;
   final String? logoUrl;
   final int? captureId;
+  final int captureCount;
   final List<Map<String, dynamic>> journeys;
 
   bool get isOwned => mode == 'owned';
@@ -99,6 +101,7 @@ class DigniEvent {
     state: (json['state'] ?? 'active').toString(),
     logoUrl: json['logo_url']?.toString(),
     captureId: (json['capture_id'] as num?)?.toInt(),
+    captureCount: (json['capture_count'] as num?)?.toInt() ?? 0,
     journeys: ((json['journeys'] as List?) ?? const [])
       .whereType<Map>()
       .map((x) => Map<String, dynamic>.from(x))
