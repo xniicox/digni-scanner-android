@@ -79,6 +79,8 @@ class _DigniV3AppState extends State<DigniV3App> {
   final courtesyCommune = TextEditingController(text: 'Santiago');
   final peopleSearchFocus = FocusNode();
   final scaffoldKey = GlobalKey<ScaffoldState>();
+  final navigatorKey = GlobalKey<NavigatorState>();
+  final messengerKey = GlobalKey<ScaffoldMessengerState>();
 
   late final DigniApi? api = apiBase.trim().isEmpty
       ? null
@@ -297,7 +299,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   Future<void> _manualSync() async {
     if (!online) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        messengerKey.currentState?.showSnackBar(const SnackBar(
           content: Text('Sin conexión. La sincronización se reintentará automáticamente.'),
         ));
       }
@@ -313,7 +315,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         busy = false;
         syncing = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      messengerKey.currentState?.showSnackBar(SnackBar(
         content: Text(pendingOperations == 0
             ? 'Sincronización completada.'
             : '$pendingOperations operación(es) siguen pendientes.'),
@@ -400,11 +402,14 @@ class _DigniV3AppState extends State<DigniV3App> {
       setState(() => remoteEvents = events);
       final event = selectedEvent;
       if (event != null) {
-        final summary = await api!.summary(event.id, journeyId: journeyId);
-        if (!mounted) return;
-        setState(() => remoteSummary = summary);
-        if (view == View.people) await _loadPeople();
-        if (view == View.captures) await _loadCaptures();
+        if (event.isOwned) {
+          final summary = await api!.summary(event.id, journeyId: journeyId);
+          if (!mounted) return;
+          setState(() => remoteSummary = summary);
+          if (view == View.people) await _loadPeople();
+        } else if (view == View.captures) {
+          await _loadCaptures();
+        }
       }
       await sessions.markSynced();
       final synced = await sessions.lastSyncAt;
@@ -565,7 +570,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: await _deviceName(),
-          appVersion: '1.1.1',
+          appVersion: '1.1.2',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
@@ -693,6 +698,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       own = event.isOwned;
       busy = true;
       remoteSummary = const {};
+      remoteCaptures = const [];
+      message = '';
     });
     if (event.isOwned && !_eventAvailableToday(event)) {
       if (!mounted) return;
@@ -702,7 +709,9 @@ class _DigniV3AppState extends State<DigniV3App> {
     }
     try {
       if (api != null) {
-        remoteSummary = await api!.summary(event.id, journeyId: journeyId);
+        if (event.isOwned) {
+          remoteSummary = await api!.summary(event.id, journeyId: journeyId);
+        }
         await sessions.markSynced();
         lastSyncAt = await sessions.lastSyncAt;
         online = true;
@@ -716,6 +725,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     setState(() => busy = false);
     go(event.isOwned ? View.own : View.external);
     if (!preview && event.isOwned) unawaited(_loadPeople());
+    if (!preview && !event.isOwned) unawaited(_loadCaptures());
   }
 
   Future<void> _loadPeople() async {
@@ -758,7 +768,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     try {
       final items = await client.captures(event.id, query: search);
       if (!mounted) return;
-      setState(() => remoteCaptures = items);
+      setState(() { remoteCaptures = items; message = ''; online = true; });
     } on DigniApiException catch (error) {
       if (!mounted) return;
       setState(() { message = error.message; online = true; });
@@ -1003,7 +1013,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     courtesyRegion.text = 'Región Metropolitana';
     courtesyCommune.text = 'Santiago';
     final accepted = await showDialog<bool>(
-      context: context,
+      context: navigatorKey.currentContext!,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Registrar cortesía'),
         content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1029,7 +1039,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     final client = api;
     if (event == null || client == null || decision?.ticketId == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty || courtesyEmail.text.trim().isEmpty || courtesyPhone.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      messengerKey.currentState?.showSnackBar(const SnackBar(
         content: Text('Completa nombre, RUT, correo y teléfono para registrar la entrada.'),
       ));
       return;
@@ -1045,12 +1055,12 @@ class _DigniV3AppState extends State<DigniV3App> {
       );
       await _showServerDecision(result);
     } on DigniApiException catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(
         content: Text('No se pudo registrar: ${error.message}'),
       ));
       await _rejectionFeedback();
     } catch (_) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      if (mounted) messengerKey.currentState?.showSnackBar(const SnackBar(
         content: Text('No se pudo conectar. Conservamos la entrada para reintentar.'),
       ));
     } finally {
@@ -1702,8 +1712,6 @@ class _DigniV3AppState extends State<DigniV3App> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Image.asset('assets/brand/icono-digni.png', width: 176, height: 176),
-              const SizedBox(height: 22),
               brand(light: true, width: 220),
               const SizedBox(height: 10),
               const Text('DEVELOPED BY MAKITA CHILE', style: TextStyle(
@@ -2021,7 +2029,7 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   void demoCodes() {
     if (!preview || !own) return;
-    showModalBottomSheet<void>(context: context, showDragHandle: true,
+    showModalBottomSheet<void>(context: navigatorKey.currentContext!, showDragHandle: true,
       builder: (ctx) => SafeArea(child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 5, 20, 18),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -2288,7 +2296,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     required List<(IconData, String, String, Color)> entries,
   }) async {
     await showModalBottomSheet<void>(
-      context: context,
+      context: navigatorKey.currentContext!,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetContext) => SafeArea(
@@ -2414,7 +2422,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final historyFuture = client.attendeeHistory(person.ticketId ?? person.id);
     if (!mounted) return;
     await showModalBottomSheet<void>(
-      context: context,
+      context: navigatorKey.currentContext!,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetContext) => SafeArea(
@@ -2701,6 +2709,10 @@ class _DigniV3AppState extends State<DigniV3App> {
       const SizedBox(height: 17),
       label('ÚLTIMOS CONTACTOS'),
       const SizedBox(height: 13),
+      if (!preview && message.isNotEmpty) ...[
+        panel(Text(message, style: TextStyle(color: ink))),
+        const SizedBox(height: 13),
+      ],
       if (preview)
         for (final name in previewNames)
           Padding(
@@ -2882,6 +2894,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           borderSide: BorderSide(color: border))),
     );
     return MaterialApp(debugShowCheckedModeBanner: false, title: 'DIGNI Scanner',
+      navigatorKey: navigatorKey,
+      scaffoldMessengerKey: messengerKey,
       theme: theme,
       home: Listener(
         onPointerDown: (_) => _touchActivity(),
