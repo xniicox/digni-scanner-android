@@ -479,6 +479,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         (selectedEvent == null || !_eventAvailableToday(selectedEvent!))) {
       next = View.own;
     }
+    if (next != View.result) activePerson = null;
     setState(() {
       view = next;
       message = '';
@@ -749,8 +750,22 @@ class _DigniV3AppState extends State<DigniV3App> {
     return trimmed;
   }
 
+  Map<String, String> _civilIdentity(String raw) {
+    final uri = Uri.tryParse(raw.trim());
+    if (uri == null || !uri.host.toLowerCase().contains('registrocivil.cl')) {
+      return const {};
+    }
+    final rut = (uri.queryParameters['RUN'] ?? uri.queryParameters['run'] ?? '').trim();
+    final name = (uri.queryParameters['name'] ?? uri.queryParameters['nombre'] ?? '').trim();
+    return {
+      if (rut.isNotEmpty) 'rut': rut,
+      if (name.isNotEmpty) 'name': name,
+    };
+  }
+
   Future<void> _scan(String raw) async {
     if (!authed || !own || view != View.scanner || busy) return;
+    activePerson = null;
     if (selectedEvent == null || !_eventAvailableToday(selectedEvent!)) {
       _showDecision(const Decision(Tone.bad, 'Evento cerrado',
         'No puedes escanear ni modificar la bitácora fuera de la jornada de hoy.'));
@@ -778,10 +793,14 @@ class _DigniV3AppState extends State<DigniV3App> {
         return;
       }
       final deviceId = await sessions.ensureDeviceId();
+      final civil = _civilIdentity(raw);
+      final payload = _normalizeScanPayload(raw);
       final validation = await client.validate(
         eventId: event.id,
         journeyId: journeyId,
-        code: _normalizeScanPayload(raw),
+        code: payload,
+        rut: civil['rut'],
+        name: civil['name'],
         deviceId: deviceId,
       );
       if ((validation.outcome == 'valid' ||
@@ -881,8 +900,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       rut: value.maskedRut,
       ticketId: value.ticketId,
       reenter: value.canReenter,
-      supervisor: false,
-      courtesy: value.requiresSupervisor,
+      supervisor: value.requiresSupervisor,
+      courtesy: value.courtesy,
       checkout: value.outcome == 'already_used',
       entryNumber: value.entryNumber,
       confirmEntry: value.courtesy,
@@ -1448,13 +1467,6 @@ class _DigniV3AppState extends State<DigniV3App> {
               }),
               const Spacer(),
               const Divider(),
-              InkWell(
-                onTap: () => _drawerAction(() => launchLegalTerms()),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Text('Términos y privacidad DIGNI', style: TextStyle(color: actionInk, fontWeight: FontWeight.w700)),
-                ),
-              ),
               const Divider(),
               drawerItem(Icons.logout_rounded, 'Cerrar sesión', () {
                 _drawerAction(() => unawaited(logout()));
@@ -1622,7 +1634,12 @@ class _DigniV3AppState extends State<DigniV3App> {
               Image.asset('assets/brand/icono-digni.png', width: 176, height: 176),
               const SizedBox(height: 22),
               brand(light: true, width: 220),
-              const SizedBox(height: 52),
+              const SizedBox(height: 10),
+              const Text('DEVELOPED BY MAKITA CHILE', style: TextStyle(
+                color: Colors.white70, fontSize: 9, fontWeight: FontWeight.w700,
+                letterSpacing: 1.1,
+              )),
+              const SizedBox(height: 39),
               const SizedBox(
                 width: 106,
                 child: LinearProgressIndicator(
@@ -1976,6 +1993,11 @@ class _DigniV3AppState extends State<DigniV3App> {
                 ),
               ),
             ),
+          IconButton(
+            tooltip: 'Activar o apagar flash',
+            onPressed: () => scannerController.toggleTorch(),
+            icon: const Icon(Icons.flash_on_rounded),
+          ),
           IconButton(
             tooltip: 'Menú',
             onPressed: () => scaffoldKey.currentState?.openDrawer(),
@@ -2331,6 +2353,8 @@ class _DigniV3AppState extends State<DigniV3App> {
               }
               final alreadyIn = person.status == 'checked_in' || person.status == 'reentry';
               return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Historial asistente', style: Theme.of(sheetContext).textTheme.titleLarge),
+                const SizedBox(height: 12),
                 Text(person.name, style: Theme.of(sheetContext).textTheme.titleLarge),
                 const SizedBox(height: 5),
                 Text('RUT ${person.maskedRut}', style: TextStyle(color: muted, fontSize: 12)),
@@ -2660,6 +2684,12 @@ class _DigniV3AppState extends State<DigniV3App> {
     FilledButton.tonal(
       onPressed: () => setState(() => dark = !dark),
       child: Text(dark ? 'Modo claro' : 'Modo oscuro'),
+    ),
+    const SizedBox(height: 11),
+    OutlinedButton.icon(
+      onPressed: launchLegalTerms,
+      icon: const Icon(Icons.privacy_tip_outlined),
+      label: const Text('Términos y privacidad DIGNI'),
     ),
     const SizedBox(height: 11),
     OutlinedButton(
