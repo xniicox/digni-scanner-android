@@ -10,6 +10,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
+import 'civil_qr.dart';
 import 'session_store.dart';
 
 // A preview binary is explicitly compiled with --dart-define=DIGNI_PREVIEW=true.
@@ -407,15 +408,21 @@ class _DigniV3AppState extends State<DigniV3App> {
       }
       await sessions.markSynced();
       final synced = await sessions.lastSyncAt;
-      final status = await api!.deviceStatus();
-      final statusOperator = status['operator'] is Map
-          ? Map<String, dynamic>.from(status['operator'] as Map)
-          : const <String, dynamic>{};
-      final remoteRole = (status['role'] ?? status['user_role'] ?? statusOperator['role'])?.toString();
-      if (remoteRole != null && remoteRole.isNotEmpty && remoteRole != operatorRole && mounted) {
-        setState(() { operatorRole = remoteRole; profileChanged = true; });
+      // Device metadata is optional for older plugin installations. A 404
+      // must never turn a successful event sync into an offline state.
+      try {
+        final status = await api!.deviceStatus();
+        final statusOperator = status['operator'] is Map
+            ? Map<String, dynamic>.from(status['operator'] as Map)
+            : const <String, dynamic>{};
+        final remoteRole = (status['role'] ?? status['user_role'] ?? statusOperator['role'])?.toString();
+        if (remoteRole != null && remoteRole.isNotEmpty && remoteRole != operatorRole && mounted) {
+          setState(() { operatorRole = remoteRole; profileChanged = true; });
+        }
+        offlineMaxMinutes = (status['max_offline_age_minutes'] as num?)?.toInt() ?? 30;
+      } on DigniApiException catch (error) {
+        if (error.statusCode != 404) rethrow;
       }
-      offlineMaxMinutes = (status['max_offline_age_minutes'] as num?)?.toInt() ?? 30;
       final pendingCount = await sessions.pendingOperationCount();
       if (mounted) {
         setState(() {
@@ -558,7 +565,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: await _deviceName(),
-          appVersion: '1.1.0',
+          appVersion: '1.1.1',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
@@ -766,92 +773,10 @@ class _DigniV3AppState extends State<DigniV3App> {
     return '$deviceId-${DateTime.now().microsecondsSinceEpoch}-$random';
   }
 
-  String _normalizeScanPayload(String raw) {
-    final trimmed = raw.trim();
-    final uri = Uri.tryParse(trimmed);
-    if (uri != null && uri.host.toLowerCase().contains('registrocivil.cl')) {
-      final run = uri.queryParameters['RUN'] ?? uri.queryParameters['run'];
-      if (run != null && run.trim().isNotEmpty) return run.trim();
-    }
-    return trimmed;
-  }
-
-  Map<String, String> _civilIdentity(String raw) {
-    final trimmed = raw.trim();
-    final uri = Uri.tryParse(trimmed);
-    final isCivilUrl = uri != null &&
-        uri.host.toLowerCase().contains('registrocivil.cl');
-    String queryValue(String key) {
-      if (uri == null) return '';
-      for (final entry in uri.queryParameters.entries) {
-        if (entry.key.toLowerCase() == key.toLowerCase()) {
-          return entry.value.trim();
-        }
-      }
-      return '';
-    }
-    var rut = isCivilUrl ? queryValue('run') : '';
-    var name = isCivilUrl ? (queryValue('name').isNotEmpty
-        ? queryValue('name') : queryValue('nombre')) : '';
-    // Some camera decoders expose the PDF417 payload as text instead of a
-    // URL. Keep a safe local fallback for the same Registro Civil fields.
-    if (rut.isEmpty) {
-      rut = RegExp(r'(?:RUN|RUT|document_number)\s*[=:]\s*([0-9.\-]{7,12}[0-9kK])',
-          caseSensitive: false).firstMatch(trimmed)?.group(1)?.trim() ?? '';
-    }
-    if (name.isEmpty) {
-      name = RegExp(r'(?:name|nombre)\s*[=:]\s*([^&\n]+)',
-          caseSensitive: false).firstMatch(trimmed)?.group(1)?.trim() ?? '';
-    }
-    if (!isCivilUrl && rut.isEmpty && name.isEmpty) return const {};
-    return {
-      if (rut.isNotEmpty) 'rut': rut,
-      if (name.isNotEmpty) 'name': name,
-    };
-  }
-
-  String _canonicalRut(String value) => value
-      .toUpperCase()
-      .replaceAll(RegExp(r'[^0-9K]'), '');
-
-  Future<String?> _resolveCivilTicketCode(
-      DigniApi client, DigniEvent event, Map<String, String> identity) async {
-    final terms = <String>{
-      if ((identity['rut'] ?? '').isNotEmpty) identity['rut']!,
-      if ((identity['name'] ?? '').isNotEmpty) identity['name']!,
-    };
-    for (final term in terms) {
-      try {
-        final rows = await client.attendees(
-          event.id,
-          journeyId: journeyId,
-          query: term,
-        );
-        final expectedRut = _canonicalRut(identity['rut'] ?? '');
-        for (final row in rows) {
-          final sameName = (identity['name'] ?? '').isNotEmpty &&
-              row.name.trim().toLowerCase() ==
-                  identity['name']!.trim().toLowerCase();
-          final sameRut = expectedRut.isNotEmpty &&
-              _canonicalRut(row.maskedRut) == expectedRut;
-          if ((sameName || sameRut) &&
-              row.code != null && row.code!.trim().isNotEmpty) {
-            return row.code!.trim();
-          }
-        }
-      } on DigniApiException {
-        // The current plugin protects the attendee list by role. A compatible
-        // validate endpoint can still consume the original QR plus identity.
-        break;
-      } catch (_) {
-        break;
-      }
-    }
-    return null;
-  }
-
   bool _needsEntryData(DigniValidation value) {
-    if (value.needsData || value.courtesy || value.outcome == 'requires_supervisor') return true;
+    if (value.needsData || value.courtesy || value.outcome == 'pending_data') return true;
+    if (value.outcome == 'requires_supervisor' && value.status == 'confirmed') return true;
+    if (value.status != 'confirmed') return false;
     final text = '${value.outcome} ${value.title} ${value.message}'.toLowerCase();
     return text.contains('dato') || text.contains('cortes') ||
         text.contains('sin asign') || text.contains('incomplet') ||
@@ -899,7 +824,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     setState(() => busy = true);
     try {
       if (!online) {
-        final offline = await _offlineScan(_normalizeScanPayload(raw));
+        final offline = await _offlineScan(CivilQr.normalizePayload(raw));
         if (offline != null) {
           _showDecision(offline);
           if (offline.tone == Tone.bad) await _rejectionFeedback();
@@ -907,16 +832,8 @@ class _DigniV3AppState extends State<DigniV3App> {
         return;
       }
       final deviceId = await sessions.ensureDeviceId();
-      final civil = _civilIdentity(raw);
-      var payload = _normalizeScanPayload(raw);
-      if (civil.isNotEmpty) {
-        // The WordPress scanner API validates the ticket's own QR code. When
-        // the camera reads a Chilean ID, first resolve that identity to the
-        // attendee's ticket code; compatible servers may instead consume the
-        // original URL through qr_data/rut/name below.
-        final ticketCode = await _resolveCivilTicketCode(client, event, civil);
-        payload = ticketCode ?? civil['rut'] ?? raw.trim();
-      }
+      final civil = CivilQr.identity(raw);
+      final payload = CivilQr.normalizePayload(raw);
       final validation = await client.validate(
         eventId: event.id,
         journeyId: journeyId,
@@ -949,7 +866,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     } on DigniApiException catch (error) {
       if (error.statusCode == null || !online) {
         if (mounted) setState(() => online = false);
-        final offline = await _offlineScan(_normalizeScanPayload(raw));
+        final offline = await _offlineScan(CivilQr.normalizePayload(raw));
         if (offline != null) {
           _showDecision(offline);
           if (offline.tone == Tone.bad) await _rejectionFeedback();
@@ -1004,6 +921,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   Future<void> _showServerDecision(DigniValidation value) async {
     var tone = Tone.bad;
     if (value.outcome == 'approved' ||
+        value.outcome == 'checked_out' ||
         value.outcome == 'checked_in' ||
         value.outcome == 'reentry_approved') {
       tone = Tone.good;
@@ -1108,7 +1026,9 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     final client = api;
     if (event == null || client == null || decision?.ticketId == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty || courtesyEmail.text.trim().isEmpty || courtesyPhone.text.trim().isEmpty) {
-      _showDecision(const Decision(Tone.bad, 'Faltan datos', 'Completa nombre, RUT, correo y teléfono para registrar la entrada.'));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Completa nombre, RUT, correo y teléfono para registrar la entrada.'),
+      ));
       return;
     }
     setState(() => busy = true);
@@ -1122,8 +1042,14 @@ class _DigniV3AppState extends State<DigniV3App> {
       );
       await _showServerDecision(result);
     } on DigniApiException catch (error) {
-      _showDecision(Decision(Tone.bad, 'No se pudo registrar', error.message));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('No se pudo registrar: ${error.message}'),
+      ));
       await _rejectionFeedback();
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No se pudo conectar. Conservamos la entrada para reintentar.'),
+      ));
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -1398,7 +1324,7 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Widget brand({bool light = false, double width = 118}) {
     final asset = light
-        ? 'assets/brand/DIGNI-BLANCO.png'
+        ? 'assets/brand/DIGNI_BLANCO.png'
         : 'assets/brand/DIGNI-NEGRO.png';
     return Image.asset(
       asset,
@@ -2250,7 +2176,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         const SizedBox(height: 28),
         panel(Column(children: [
           sub('ASISTENTE'), const SizedBox(height: 12),
-          Text(r.name!, style: TextStyle(
+          Text(r.name!, textAlign: TextAlign.center, softWrap: true, style: TextStyle(
             color: ink, fontWeight: FontWeight.w900, fontSize: 19)),
           const SizedBox(height: 9),
           Text('RUT ' + (r.rut ?? ''),
@@ -2272,11 +2198,11 @@ class _DigniV3AppState extends State<DigniV3App> {
                 Icon(Icons.confirmation_number_rounded,
                     color: statusInk(r.tone == Tone.good ? good : brandRed)),
                 const SizedBox(width: 9),
-                Text(r.accessNumber != null
+                Expanded(child: Text(r.accessNumber != null
                     ? 'TICKET DE INGRESO #${r.accessNumber}'
-                    : 'ENTRADA ${r.entryNumber}', style: TextStyle(
+                    : 'ENTRADA ${r.entryNumber}', softWrap: true, style: TextStyle(
                   color: statusInk(r.tone == Tone.good ? good : brandRed),
-                  fontWeight: FontWeight.w900, fontSize: 16)),
+                  fontWeight: FontWeight.w900, fontSize: 14))),
               ]),
             ),
           ],
@@ -2325,10 +2251,15 @@ class _DigniV3AppState extends State<DigniV3App> {
         onPressed: busy ? null : confirmReentry,
         child: const Text('Confirmar reingreso'),
       ),
-      if (activePerson != null) ...[
+      if (r.ticketId != null) ...[
         const SizedBox(height: 10),
         OutlinedButton.icon(
-          onPressed: () => _showRemoteHistory(activePerson!),
+          onPressed: () => _showRemoteHistory(activePerson ?? DigniAttendee(
+            id: r.ticketId!, ticketId: r.ticketId, name: r.name ?? 'Asistente',
+            maskedRut: r.rut ?? '',
+            status: r.checkout || (r.tone == Tone.good && !r.confirmEntry)
+                ? 'checked_in' : 'registered',
+            entryNumber: r.entryNumber)),
           icon: const Icon(Icons.history_rounded),
           label: const Text('Ver historial de entrada'),
         ),
@@ -2469,7 +2400,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           Tone.warn, 'Confirmar reingreso',
           'Confirma el reingreso de esta persona.',
           name: person.name, rut: person.maskedRut, ticketId: person.ticketId ?? person.id, entryNumber: person.entryNumber,
-          reenter: alreadyIn),
+          reenter: alreadyIn || person.status == 'checked_out'),
     };
     setState(() { decision = result; view = View.result; });
   }
@@ -2522,6 +2453,8 @@ class _DigniV3AppState extends State<DigniV3App> {
                   'No hay ingresos ni reingresos en el historial.', muted));
               }
               final alreadyIn = person.status == 'checked_in' || person.status == 'reentry';
+              final checkedOut = person.status == 'checked_out';
+              final canOperate = selectedEvent != null && _eventAvailableToday(selectedEvent!);
               return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Historial de entrada', style: Theme.of(sheetContext).textTheme.titleLarge),
                 const SizedBox(height: 12),
@@ -2533,8 +2466,9 @@ class _DigniV3AppState extends State<DigniV3App> {
                   Container(width: double.infinity, padding: const EdgeInsets.all(13),
                     decoration: BoxDecoration(color: tint, borderRadius: BorderRadius.circular(14),
                       border: Border.all(color: brandRed.withValues(alpha: .35))),
-                    child: Text('ENTRADA ${person.entryNumber}', style: TextStyle(
-                      color: actionInk, fontWeight: FontWeight.w900, fontSize: 16))),
+                    child: Text('ENTRADA ${person.entryNumber}', softWrap: true,
+                      style: TextStyle(
+                      color: actionInk, fontWeight: FontWeight.w900, fontSize: 14))),
                 ],
                 const SizedBox(height: 18),
                 for (var index = 0; index < entries.length; index++) Padding(
@@ -2552,10 +2486,13 @@ class _DigniV3AppState extends State<DigniV3App> {
                 const SizedBox(height: 7),
                 Text('Acciones', style: TextStyle(color: ink, fontWeight: FontWeight.w900)),
                 const SizedBox(height: 9),
-                if (!alreadyIn) SizedBox(width: double.infinity, child: FilledButton.icon(
+                if (canOperate && !alreadyIn && !checkedOut) SizedBox(width: double.infinity, child: FilledButton.icon(
                   icon: const Icon(Icons.login_rounded), label: const Text('Registrar ingreso'),
                   onPressed: () { Navigator.pop(sheetContext); _preparePersonAction(person, 'checkin'); })),
-                if (alreadyIn) ...[
+                if (canOperate && checkedOut) SizedBox(width: double.infinity, child: FilledButton.icon(
+                  icon: const Icon(Icons.replay_rounded), label: const Text('Registrar reingreso'),
+                  onPressed: () { Navigator.pop(sheetContext); _preparePersonAction(person, 'reentry'); })),
+                if (canOperate && alreadyIn) ...[
                   SizedBox(width: double.infinity, child: FilledButton.icon(
                     icon: const Icon(Icons.logout_rounded), label: const Text('Registrar salida'),
                     onPressed: () { Navigator.pop(sheetContext); _preparePersonAction(person, 'checkout'); })),
@@ -2575,6 +2512,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   String _humanStatus(String status) {
     if (status == 'checked_in') return 'Ingresó';
     if (status == 'reentry') return 'Reingreso';
+    if (status == 'checked_out') return 'Salió';
     if (status == 'cancelled') return 'Anulada';
     return 'Pendiente';
   }
@@ -2670,10 +2608,7 @@ class _DigniV3AppState extends State<DigniV3App> {
                         padding: const EdgeInsets.only(bottom: 11),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(23),
-                          onTap: () {
-                            final action = person.status == 'checked_in' || person.status == 'reentry' ? 'checkout' : 'checkin';
-                            _preparePersonAction(person, action);
-                          },
+                          onTap: () => _showRemoteHistory(person),
                           child: panel(Row(children: [
                             CircleAvatar(
                               backgroundColor: tint,

@@ -171,6 +171,7 @@ class DigniValidation {
     this.needsData = false,
     this.usedAt,
     this.usedBy,
+    this.status,
   });
   final String outcome;
   final String title;
@@ -186,6 +187,7 @@ class DigniValidation {
   final bool needsData;
   final String? usedAt;
   final String? usedBy;
+  final String? status;
 
   factory DigniValidation.fromJson(Map<String, dynamic> json) => DigniValidation(
     outcome: (json['outcome'] ?? 'not_found').toString(),
@@ -212,6 +214,7 @@ class DigniValidation {
             (json['access'] is Map ? (json['access'] as Map)['created_at'] : null))?.toString(),
     usedBy: (json['used_by'] ?? json['operator_name'] ?? json['checked_by'] ??
             (json['access'] is Map ? (json['access'] as Map)['operator_name'] : null))?.toString(),
+    status: json['status']?.toString(),
   );
 }
 
