@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
 import 'session_store.dart';
@@ -67,6 +68,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   final twoFactorCode = TextEditingController();
   final courtesyName = TextEditingController();
   final courtesyRut = TextEditingController();
+  final courtesyEmail = TextEditingController();
   final courtesyRegion = TextEditingController(text: 'Región Metropolitana');
   final courtesyCommune = TextEditingController(text: 'Santiago');
   final peopleSearchFocus = FocusNode();
@@ -83,6 +85,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   final used = <String>{};
   Timer? autoReturn;
   Timer? refreshTimer;
+  Timer? inactivityTimer;
   StreamSubscription<List<ConnectivityResult>>? connectivitySubscription;
   bool online = true;
   DateTime? lastSyncAt;
@@ -101,6 +104,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   int peopleRequest = 0;
   bool peopleLoading = false;
   bool syncing = false;
+  DigniAttendee? activePerson;
   String operatorName = 'Operador DIGNI';
   String operatorRole = 'operator';
   bool profileChanged = false;
@@ -176,9 +180,36 @@ class _DigniV3AppState extends State<DigniV3App> {
     return color;
   }
 
+  String _initials() {
+    final words = operatorName.trim().split(RegExp(r'\s+')).where((x) => x.isNotEmpty).toList();
+    if (words.isEmpty) return 'DG';
+    if (words.length == 1) return words.first.substring(0, words.first.length >= 2 ? 2 : 1).toUpperCase();
+    return '${words.first[0]}${words.last[0]}'.toUpperCase();
+  }
+
+  void _touchActivity() {
+    inactivityTimer?.cancel();
+    if (!authed) return;
+    inactivityTimer = Timer(const Duration(minutes: 20), _expireForInactivity);
+  }
+
+  Future<void> _expireForInactivity() async {
+    inactivityTimer?.cancel();
+    await sessions.clear();
+    if (!mounted) return;
+    setState(() {
+      authed = false;
+      pin.clear();
+      twoFactorChallenge = null;
+      view = View.login;
+      message = 'La sesión se cerró por 20 minutos de inactividad. Ingresa tu PIN nuevamente.';
+    });
+  }
+
   @override
   void initState() {
     super.initState();
+    _touchActivity();
     refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       unawaited(_refreshRemoteData());
     });
@@ -420,6 +451,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   void dispose() {
     autoReturn?.cancel();
     refreshTimer?.cancel();
+    inactivityTimer?.cancel();
     searchDebounce?.cancel();
     connectivitySubscription?.cancel();
     scannerController.dispose();
@@ -431,12 +463,14 @@ class _DigniV3AppState extends State<DigniV3App> {
     twoFactorCode.dispose();
     courtesyName.dispose();
     courtesyRut.dispose();
+    courtesyEmail.dispose();
     courtesyRegion.dispose();
     courtesyCommune.dispose();
     super.dispose();
   }
 
   void go(View next) {
+    _touchActivity();
     autoReturn?.cancel();
     if (!authed && next != View.login && next != View.splash) next = View.login;
     if (!own && (next == View.scanner || next == View.people)) next = View.external;
@@ -514,6 +548,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         busy = false;
         view = View.events;
       });
+      _touchActivity();
     } on DigniTwoFactorRequired catch (error) {
       if (!mounted) return;
       setState(() {
@@ -565,6 +600,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         busy = false;
         view = View.events;
       });
+      _touchActivity();
     } on DigniApiException catch (error) {
       if (!mounted) return;
       setState(() { busy = false; message = error.message; });
@@ -575,6 +611,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   Future<void> logout() async {
+    inactivityTimer?.cancel();
     if (preview) {
       await sessions.clear();
     } else if (api != null) {
@@ -780,12 +817,9 @@ class _DigniV3AppState extends State<DigniV3App> {
       _showDecision(Decision(Tone.bad, 'No se pudo validar', error.message));
       await _rejectionFeedback();
     } catch (_) {
-      if (mounted) setState(() => online = false);
-      final offline = await _offlineScan(_normalizeScanPayload(raw));
-      if (offline != null) {
-        _showDecision(offline);
-        if (offline.tone == Tone.bad) await _rejectionFeedback();
-      }
+      _showDecision(const Decision(Tone.bad, 'No se pudo validar',
+        'Revisa la conexión e inténtalo nuevamente.'));
+      await _rejectionFeedback();
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -851,6 +885,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       courtesy: value.requiresSupervisor,
       checkout: value.outcome == 'already_used',
       entryNumber: value.entryNumber,
+      confirmEntry: value.courtesy,
     ));
     if (tone == Tone.good) {
       await _approvalFeedback();
@@ -869,6 +904,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   Future<void> _showCourtesyForm() async {
     courtesyName.clear();
     courtesyRut.clear();
+    courtesyEmail.clear();
     courtesyRegion.text = 'Región Metropolitana';
     courtesyCommune.text = 'Santiago';
     final accepted = await showDialog<bool>(
@@ -879,6 +915,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           TextField(controller: courtesyName, decoration: const InputDecoration(labelText: 'Nombre completo')),
           const SizedBox(height: 10),
           TextField(controller: courtesyRut, decoration: const InputDecoration(labelText: 'RUT'), keyboardType: TextInputType.text),
+          const SizedBox(height: 10),
+          TextField(controller: courtesyEmail, decoration: const InputDecoration(labelText: 'Correo electrónico'), keyboardType: TextInputType.emailAddress),
           const SizedBox(height: 10),
           TextField(controller: courtesyRegion, decoration: const InputDecoration(labelText: 'Región')),
           const SizedBox(height: 10),
@@ -893,7 +931,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (accepted != true || !mounted) return;
     final event = selectedEvent;
     final client = api;
-    if (event == null || client == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty) {
+    if (event == null || client == null || decision?.ticketId == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty || courtesyEmail.text.trim().isEmpty) {
       _showDecision(const Decision(Tone.bad, 'Faltan datos', 'Completa nombre y RUT para registrar la cortesía.'));
       return;
     }
@@ -901,8 +939,8 @@ class _DigniV3AppState extends State<DigniV3App> {
     try {
       final deviceId = await sessions.ensureDeviceId();
       final result = await client.courtesyCheckIn(
-        eventId: event.id, journeyId: journeyId, name: courtesyName.text.trim(),
-        rut: courtesyRut.text.trim(), region: courtesyRegion.text.trim(),
+        eventId: event.id, journeyId: journeyId, ticketId: decision!.ticketId!, name: courtesyName.text.trim(),
+        email: courtesyEmail.text.trim(), rut: courtesyRut.text.trim(), region: courtesyRegion.text.trim(),
         commune: courtesyCommune.text.trim(), deviceId: deviceId,
         idempotencyKey: _idempotencyKey(deviceId),
       );
@@ -1220,7 +1258,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   Widget sub(String value) => Text(value,
     style: TextStyle(color: muted, fontSize: 12, height: 1.5));
 
-  Widget panel(Widget child, {Color? color, EdgeInsets? padding}) => Container(
+  Widget panel(Widget child, {Color? color, Gradient? gradient, EdgeInsets? padding}) => Container(
     width: double.infinity,
     padding: padding ?? const EdgeInsets.all(17),
     decoration: BoxDecoration(color: color ?? surface,
@@ -1309,6 +1347,11 @@ class _DigniV3AppState extends State<DigniV3App> {
     ]),
   );
 
+  Future<void> launchLegalTerms() async {
+    final uri = Uri.parse('https://www.makita.cl/terminos-y-privacidad-digni');
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
   String _roleLabel() {
     final value = operatorRole.toLowerCase();
     if (value.contains('super')) return 'Supervisor';
@@ -1348,12 +1391,12 @@ class _DigniV3AppState extends State<DigniV3App> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              brand(width: 142),
+              brand(light: dark, width: 142),
               const SizedBox(height: 26),
               panel(Row(children: [
                 CircleAvatar(
                   backgroundColor: tint,
-                  child: Text('NO', style: TextStyle(
+                  child: Text(_initials(), style: TextStyle(
                     color: actionInk, fontSize: 11, fontWeight: FontWeight.w800)),
                 ),
                 const SizedBox(width: 12),
@@ -1405,6 +1448,14 @@ class _DigniV3AppState extends State<DigniV3App> {
               }),
               const Spacer(),
               const Divider(),
+              InkWell(
+                onTap: () => _drawerAction(() => launchLegalTerms()),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text('Términos y privacidad DIGNI', style: TextStyle(color: actionInk, fontWeight: FontWeight.w700)),
+                ),
+              ),
+              const Divider(),
               drawerItem(Icons.logout_rounded, 'Cerrar sesión', () {
                 _drawerAction(() => unawaited(logout()));
               }, color: red),
@@ -1416,7 +1467,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   Widget shell(Widget body,
-      {bool back = false, bool nav = false, String active = ''}) {
+      {bool back = false, View? backTarget, bool nav = false, String active = ''}) {
     return Scaffold(
       key: scaffoldKey,
       drawer: authed ? _drawer() : null,
@@ -1428,14 +1479,14 @@ class _DigniV3AppState extends State<DigniV3App> {
             ? IconButton(
                 tooltip: back ? 'Volver' : 'Menú',
                 onPressed: back
-                    ? () => go(own ? View.own : View.external)
+                    ? () => go(backTarget ?? (own ? View.own : View.external))
                     : () => scaffoldKey.currentState?.openDrawer(),
                 icon: Icon(back
                     ? Icons.arrow_back_rounded
                     : Icons.menu_rounded),
               )
             : null,
-        title: brand(width: 108),
+        title: brand(light: dark, width: 108),
         actions: [
           IconButton(
             tooltip: dark ? 'Modo claro' : 'Modo oscuro',
@@ -1451,11 +1502,11 @@ class _DigniV3AppState extends State<DigniV3App> {
               icon: const Icon(Icons.menu_rounded),
             )
           else if (authed)
-            const Padding(
-              padding: EdgeInsets.only(right: 16),
+            Padding(
+              padding: const EdgeInsets.only(right: 16),
               child: CircleAvatar(
                 backgroundColor: Color(0xFFFDE7EC),
-                child: Text('NO', style: TextStyle(
+                child: Text(_initials(), style: TextStyle(
                   color: deep, fontSize: 11, fontWeight: FontWeight.w800)),
               ),
             ),
@@ -2096,10 +2147,18 @@ class _DigniV3AppState extends State<DigniV3App> {
         onPressed: busy ? null : confirmReentry,
         child: const Text('Confirmar reingreso'),
       ),
+      if (activePerson != null) ...[
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () => _showRemoteHistory(activePerson!),
+          icon: const Icon(Icons.history_rounded),
+          label: const Text('Ver bitácora completa'),
+        ),
+      ],
       const SizedBox(height: 13),
-      OutlinedButton(onPressed: () => go(View.own),
-        child: const Text('Volver al panel')),
-    ]), back: true);
+      OutlinedButton(onPressed: () => go(View.events),
+        child: const Text('Volver a mis eventos')),
+    ]), back: true, backTarget: View.events);
   }
 
   Future<void> _historySheet({
@@ -2207,6 +2266,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     if (event == null || !_eventAvailableToday(event)) return;
     final alreadyIn = person.status == 'checked_in' || person.status == 'reentry';
+    activePerson = person;
     final result = switch (action) {
       'checkin' => Decision(
           Tone.warn, 'Confirmar ingreso',
@@ -2416,7 +2476,10 @@ class _DigniV3AppState extends State<DigniV3App> {
                         padding: const EdgeInsets.only(bottom: 11),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(23),
-                          onTap: () => _showRemoteHistory(person),
+                          onTap: () {
+                            final action = person.status == 'checked_in' || person.status == 'reentry' ? 'checkout' : 'checkin';
+                            _preparePersonAction(person, action);
+                          },
                           child: panel(Row(children: [
                             CircleAvatar(
                               backgroundColor: tint,
@@ -2682,13 +2745,17 @@ class _DigniV3AppState extends State<DigniV3App> {
     );
     return MaterialApp(debugShowCheckedModeBanner: false, title: 'DIGNI Scanner',
       theme: theme,
-      home: AnimatedSwitcher(duration: const Duration(milliseconds: 300),
-        switchInCurve: Curves.easeOutCubic,
-        transitionBuilder: (child, anim) => FadeTransition(opacity: anim,
-          child: SlideTransition(position: Tween(
-            begin: const Offset(.03, .018), end: Offset.zero).animate(anim),
-            child: child)),
-        child: KeyedSubtree(key: ValueKey(view), child: screen)),
+      home: Listener(
+        onPointerDown: (_) => _touchActivity(),
+        onPointerMove: (_) => _touchActivity(),
+        child: AnimatedSwitcher(duration: const Duration(milliseconds: 300),
+          switchInCurve: Curves.easeOutCubic,
+          transitionBuilder: (child, anim) => FadeTransition(opacity: anim,
+            child: SlideTransition(position: Tween(
+              begin: const Offset(.03, .018), end: Offset.zero).animate(anim),
+              child: child)),
+          child: KeyedSubtree(key: ValueKey(view), child: screen)),
+      ),
     );
   }
 }

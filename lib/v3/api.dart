@@ -161,6 +161,7 @@ class DigniValidation {
     this.canReenter = false,
     this.requiresSupervisor = false,
     this.entryNumber,
+    this.courtesy = false,
   });
   final String outcome;
   final String title;
@@ -171,12 +172,13 @@ class DigniValidation {
   final bool canReenter;
   final bool requiresSupervisor;
   final String? entryNumber;
+  final bool courtesy;
 
   factory DigniValidation.fromJson(Map<String, dynamic> json) => DigniValidation(
     outcome: (json['outcome'] ?? 'not_found').toString(),
     title: (json['title'] ?? 'No disponible').toString(),
     message: (json['message'] ?? '').toString(),
-    ticketId: (json['ticket_id'] as num?)?.toInt(),
+    ticketId: int.tryParse((json['ticket_id'] ?? json['id'] ?? '').toString()),
     name: (json['name'] ?? (json['attendee'] is Map
             ? (json['attendee'] as Map)['name']
             : null))?.toString(),
@@ -185,6 +187,7 @@ class DigniValidation {
             : null))?.toString(),
     canReenter: json['can_reenter'] == true,
     requiresSupervisor: json['requires_supervisor'] == true,
+    courtesy: json['courtesy'] == true,
     entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['number'] ?? (json['ticket'] is Map ? (json['ticket'] as Map)['number'] : null))?.toString(),
   );
 }
@@ -421,8 +424,10 @@ class DigniApi {
   Future<DigniValidation> courtesyCheckIn({
     required int eventId,
     int? journeyId,
+    required int ticketId,
     required String name,
     required String rut,
+    required String email,
     required String region,
     required String commune,
     required String deviceId,
@@ -431,9 +436,11 @@ class DigniApi {
     final json = await _request('POST', '/check-in', body: {
       'event_id': eventId,
       if (journeyId != null) 'journey_id': journeyId,
+      'ticket_id': ticketId,
       'action': 'courtesy',
       'name': name,
       'rut': rut,
+      'email': email,
       'region': region,
       'commune': commune,
       'device_id': deviceId,
