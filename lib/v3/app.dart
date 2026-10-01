@@ -27,7 +27,7 @@ const good = Color(0xFF0CA73D);
 const amber = Color(0xFFF9A700);
 const red = Color(0xFFEB2217);
 
-enum View { splash, login, events, own, external, scanner, result, people,
+enum View { splash, login, events, own, external, scanner, result, courtesy, people,
   captures, info, account }
 enum Tone { good, warn, bad }
 
@@ -77,6 +77,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   final courtesyPhone = TextEditingController();
   final courtesyRegion = TextEditingController(text: 'Región Metropolitana');
   final courtesyCommune = TextEditingController(text: 'Santiago');
+  final courtesyFormKey = GlobalKey<FormState>();
   final peopleSearchFocus = FocusNode();
   final scaffoldKey = GlobalKey<ScaffoldState>();
   final navigatorKey = GlobalKey<NavigatorState>();
@@ -89,6 +90,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   View view = View.splash;
   bool dark = false, authed = false, own = true, busy = false;
   String message = '', search = '';
+  String courtesyError = '';
   Decision? decision;
   final used = <String>{};
   Timer? autoReturn;
@@ -525,7 +527,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         (selectedEvent == null || !_eventAvailableToday(selectedEvent!))) {
       next = View.own;
     }
-    if (next != View.result) activePerson = null;
+    if (next != View.result && next != View.courtesy) activePerson = null;
     setState(() {
       view = next;
       message = '';
@@ -578,7 +580,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: await _deviceName(),
-          appVersion: '1.1.2',
+          appVersion: '1.1.3',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
@@ -1013,46 +1015,30 @@ class _DigniV3AppState extends State<DigniV3App> {
     });
   }
 
-  Future<void> _showCourtesyForm() async {
-    courtesyName.clear();
+  void _openCourtesyForm() {
+    courtesyName.text = decision?.name ?? '';
     courtesyRut.clear();
     courtesyEmail.clear();
     courtesyPhone.clear();
     courtesyRegion.text = 'Región Metropolitana';
     courtesyCommune.text = 'Santiago';
-    final accepted = await showDialog<bool>(
-      context: navigatorKey.currentState!.overlay!.context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Registrar cortesía'),
-        content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: courtesyName, decoration: const InputDecoration(labelText: 'Nombre completo')),
-          const SizedBox(height: 10),
-          TextField(controller: courtesyRut, decoration: const InputDecoration(labelText: 'RUT'), keyboardType: TextInputType.text),
-          const SizedBox(height: 10),
-          TextField(controller: courtesyEmail, decoration: const InputDecoration(labelText: 'Correo electrónico'), keyboardType: TextInputType.emailAddress),
-          const SizedBox(height: 10),
-          TextField(controller: courtesyPhone, decoration: const InputDecoration(labelText: 'Teléfono'), keyboardType: TextInputType.phone),
-          const SizedBox(height: 10),
-          TextField(controller: courtesyRegion, decoration: const InputDecoration(labelText: 'Región')),
-          const SizedBox(height: 10),
-          TextField(controller: courtesyCommune, decoration: const InputDecoration(labelText: 'Comuna')),
-        ])),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Registrar')),
-        ],
-      ),
-    );
-    if (accepted != true || !mounted) return;
+    courtesyError = '';
+    go(View.courtesy);
+  }
+
+  Future<void> _submitCourtesyForm() async {
+    if (busy || courtesyFormKey.currentState?.validate() != true) return;
     final event = selectedEvent;
     final client = api;
-    if (event == null || client == null || decision?.ticketId == null || courtesyName.text.trim().isEmpty || courtesyRut.text.trim().isEmpty || courtesyEmail.text.trim().isEmpty || courtesyPhone.text.trim().isEmpty) {
-      messengerKey.currentState?.showSnackBar(const SnackBar(
-        content: Text('Completa nombre, RUT, correo y teléfono para registrar la entrada.'),
-      ));
+    if (event == null || client == null || decision?.ticketId == null) {
+      setState(() => courtesyError = 'No encontramos la entrada. Vuelve a escanearla.');
       return;
     }
-    setState(() => busy = true);
+    if (!online) {
+      setState(() => courtesyError = 'Necesitas conexión para guardar los datos de esta entrada.');
+      return;
+    }
+    setState(() { busy = true; courtesyError = ''; });
     try {
       final deviceId = await sessions.ensureDeviceId();
       final result = await client.courtesyCheckIn(
@@ -1062,15 +1048,12 @@ class _DigniV3AppState extends State<DigniV3App> {
         idempotencyKey: _idempotencyKey(deviceId),
       );
       await _showServerDecision(result);
+      unawaited(_loadPeople());
     } on DigniApiException catch (error) {
-      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(
-        content: Text('No se pudo registrar: ${error.message}'),
-      ));
+      if (mounted) setState(() => courtesyError = error.message);
       await _rejectionFeedback();
     } catch (_) {
-      if (mounted) messengerKey.currentState?.showSnackBar(const SnackBar(
-        content: Text('No se pudo conectar. Conservamos la entrada para reintentar.'),
-      ));
+      if (mounted) setState(() => courtesyError = 'No se pudo conectar. Los datos siguen en el formulario para reintentar.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -2168,6 +2151,78 @@ class _DigniV3AppState extends State<DigniV3App> {
     );
   }
 
+  Widget courtesyForm() => shell(content([
+    label('COMPLETAR ENTRADA'),
+    const SizedBox(height: 10),
+    title('Datos del asistente'),
+    const SizedBox(height: 10),
+    sub('Completa los datos y luego registraremos el ingreso.'),
+    if (decision?.entryNumber != null) ...[
+      const SizedBox(height: 18),
+      panel(Text('ENTRADA ${decision!.entryNumber}',
+        style: TextStyle(color: actionInk, fontWeight: FontWeight.w900))),
+    ],
+    const SizedBox(height: 18),
+    Form(
+      key: courtesyFormKey,
+      autovalidateMode: AutovalidateMode.onUserInteraction,
+      child: Column(children: [
+        TextFormField(
+          controller: courtesyName,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(labelText: 'Nombre completo'),
+          validator: (value) => (value ?? '').trim().isEmpty ? 'Ingresa el nombre completo.' : null,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: courtesyRut,
+          keyboardType: TextInputType.text,
+          decoration: const InputDecoration(labelText: 'RUT', hintText: '12345678-9'),
+          validator: (value) {
+            final normalized = (value ?? '').toUpperCase().replaceAll(RegExp(r'[.\-\s]'), '');
+            return RegExp(r'^[1-9][0-9]{6,7}[0-9K]$').hasMatch(normalized)
+                ? null : 'Ingresa un RUT válido.';
+          },
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: courtesyEmail,
+          keyboardType: TextInputType.emailAddress,
+          decoration: const InputDecoration(labelText: 'Correo electrónico'),
+          validator: (value) => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch((value ?? '').trim())
+              ? null : 'Ingresa un correo válido.'),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: courtesyPhone,
+          keyboardType: TextInputType.phone,
+          decoration: const InputDecoration(labelText: 'Teléfono'),
+          validator: (value) => (value ?? '').trim().isEmpty ? 'Ingresa un teléfono.' : null,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(controller: courtesyRegion,
+          decoration: const InputDecoration(labelText: 'Región')),
+        const SizedBox(height: 12),
+        TextFormField(controller: courtesyCommune,
+          decoration: const InputDecoration(labelText: 'Comuna')),
+        if (courtesyError.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          panel(Text(courtesyError, style: TextStyle(color: statusInk(red),
+            fontWeight: FontWeight.w700))),
+        ],
+        const SizedBox(height: 22),
+        SizedBox(width: double.infinity, child: FilledButton.icon(
+          onPressed: busy ? null : _submitCourtesyForm,
+          icon: busy
+              ? const SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2,
+                    color: Colors.white))
+              : const Icon(Icons.how_to_reg_rounded),
+          label: Text(busy ? 'Guardando…' : 'Guardar datos y registrar ingreso'),
+        )),
+      ]),
+    ),
+  ]), back: true, backTarget: View.result);
+
   Widget resultView() {
     final r = decision;
     if (r == null) return const SizedBox.shrink();
@@ -2247,7 +2302,7 @@ class _DigniV3AppState extends State<DigniV3App> {
               'Puedes registrar esta cortesía desde la app.', style: TextStyle(fontWeight: FontWeight.w800))) ]),
           const SizedBox(height: 10),
           SizedBox(width: double.infinity, child: FilledButton.icon(
-            onPressed: busy ? null : _showCourtesyForm,
+            onPressed: busy ? null : _openCourtesyForm,
             icon: const Icon(Icons.edit_note_rounded),
             label: const Text('Completar datos de cortesía'),
           )),
@@ -2836,6 +2891,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       View.external => externalDashboard(),
       View.scanner => scanner(),
       View.result => resultView(),
+      View.courtesy => courtesyForm(),
       View.people => people(),
       View.captures => captures(),
       View.info => info(),
