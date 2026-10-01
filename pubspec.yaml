@@ -27,6 +27,7 @@ flutter:
   assets:
     - assets/brand/
     - assets/sounds/check.wav
+    - assets/sounds/approved.wav
 
 flutter_launcher_icons:
   android: true
