@@ -1021,7 +1021,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     courtesyRegion.text = 'Región Metropolitana';
     courtesyCommune.text = 'Santiago';
     final accepted = await showDialog<bool>(
-      context: navigatorKey.currentContext!,
+      context: navigatorKey.currentState!.overlay!.context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Registrar cortesía'),
         content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -2037,7 +2037,7 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   void demoCodes() {
     if (!preview || !own) return;
-    showModalBottomSheet<void>(context: navigatorKey.currentContext!, showDragHandle: true,
+    showModalBottomSheet<void>(context: navigatorKey.currentState!.overlay!.context, showDragHandle: true,
       builder: (ctx) => SafeArea(child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 5, 20, 18),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -2304,7 +2304,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     required List<(IconData, String, String, Color)> entries,
   }) async {
     await showModalBottomSheet<void>(
-      context: navigatorKey.currentContext!,
+      context: navigatorKey.currentState!.overlay!.context,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetContext) => SafeArea(
@@ -2430,7 +2430,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final historyFuture = client.attendeeHistory(person.ticketId ?? person.id);
     if (!mounted) return;
     await showModalBottomSheet<void>(
-      context: navigatorKey.currentContext!,
+      context: navigatorKey.currentState!.overlay!.context,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetContext) => SafeArea(
