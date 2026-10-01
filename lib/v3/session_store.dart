@@ -18,6 +18,7 @@ class SessionStore {
   static const _operatorId = 'digni_operator_id';
   static const _operatorName = 'digni_operator_name';
   static const _email = 'digni_operator_email';
+  static const _role = 'digni_operator_role';
   static const _device = 'digni_device_id';
   static const _preview = 'digni_preview_session';
   static const _lastSync = 'digni_last_sync_at';
@@ -116,6 +117,7 @@ class SessionStore {
       storage.write(key: _operatorId, value: session.operatorId.toString()),
       storage.write(key: _operatorName, value: session.operatorName),
       storage.write(key: _email, value: session.email),
+      storage.write(key: _role, value: session.operatorRole),
       if (deviceId != null) storage.write(key: _device, value: deviceId),
       storage.delete(key: _preview),
     ]);
@@ -132,6 +134,7 @@ class SessionStore {
       storage.write(key: _operatorId, value: '1'),
       storage.write(key: _operatorName, value: 'Operador DIGNI'),
       storage.write(key: _email, value: 'demo@digni.cl'),
+      storage.write(key: _role, value: 'operator'),
       storage.write(key: _device, value: device),
       storage.write(key: _preview, value: '1'),
     ]);
@@ -161,6 +164,7 @@ class SessionStore {
     'id': await storage.read(key: _operatorId),
     'name': await storage.read(key: _operatorName),
     'email': await storage.read(key: _email),
+    'role': await storage.read(key: _role),
   };
 
   Future<void> clear() async {
@@ -173,6 +177,7 @@ class SessionStore {
       storage.delete(key: _operatorId),
       storage.delete(key: _operatorName),
       storage.delete(key: _email),
+      storage.delete(key: _role),
       storage.delete(key: _preview),
     ]);
   }

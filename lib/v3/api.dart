@@ -25,6 +25,7 @@ class DigniSession {
     required this.operatorId,
     required this.operatorName,
     required this.email,
+    required this.operatorRole,
   });
 
   final String accessToken;
@@ -34,6 +35,7 @@ class DigniSession {
   final int operatorId;
   final String operatorName;
   final String email;
+  final String operatorRole;
 
   factory DigniSession.fromJson(Map<String, dynamic> json) {
     final now = DateTime.now().toUtc();
@@ -45,9 +47,10 @@ class DigniSession {
       refreshToken: json['refresh_token'] as String,
       accessExpiresAt: now.add(Duration(seconds: (json['expires_in'] as num?)?.toInt() ?? 900)),
       refreshExpiresAt: now.add(Duration(seconds: (json['refresh_expires_in'] as num?)?.toInt() ?? 2592000)),
-      operatorId: (operator['id'] as num?)?.toInt() ?? 0,
+      operatorId: int.tryParse((operator['id'] ?? '0').toString()) ?? 0,
       operatorName: (operator['name'] ?? 'Operador DIGNI').toString(),
       email: (operator['email'] ?? '').toString(),
+      operatorRole: (operator['role'] ?? operator['user_role'] ?? operator['profile'] ?? 'operator').toString(),
     );
   }
 }
@@ -85,7 +88,7 @@ class DigniEvent {
   bool get isOpen => const {'active', 'open', 'opened'}.contains(state);
 
   factory DigniEvent.fromJson(Map<String, dynamic> json) => DigniEvent(
-    id: (json['id'] as num).toInt(),
+    id: int.tryParse((json['id'] ?? '0').toString()) ?? 0,
     title: (json['title'] ?? '').toString(),
     mode: (json['mode'] ?? 'owned').toString(),
     organizer: (json['organizer'] ?? '').toString(),
@@ -124,13 +127,13 @@ class DigniAttendee {
   final String? code;
 
   factory DigniAttendee.fromJson(Map<String, dynamic> json) => DigniAttendee(
-    id: (json['id'] as num).toInt(),
-    name: (json['name'] ?? '').toString(),
+    id: int.tryParse((json['id'] ?? json['ticket_id'] ?? json['attendee_id'] ?? '0').toString()) ?? 0,
+    name: (json['name'] ?? json['full_name'] ?? '').toString(),
     maskedRut: (json['masked_rut'] ?? '').toString(),
     status: (json['status'] ?? 'pending').toString(),
     checkedAt: json['checked_at']?.toString(),
     reentries: (json['reentries'] as num?)?.toInt() ?? 0,
-    entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['ticket_code'])?.toString(),
+    entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['ticket_code'] ?? json['number'])?.toString(),
     code: json['code']?.toString(),
   );
 
@@ -157,6 +160,7 @@ class DigniValidation {
     this.maskedRut,
     this.canReenter = false,
     this.requiresSupervisor = false,
+    this.entryNumber,
   });
   final String outcome;
   final String title;
@@ -166,6 +170,7 @@ class DigniValidation {
   final String? maskedRut;
   final bool canReenter;
   final bool requiresSupervisor;
+  final String? entryNumber;
 
   factory DigniValidation.fromJson(Map<String, dynamic> json) => DigniValidation(
     outcome: (json['outcome'] ?? 'not_found').toString(),
@@ -180,6 +185,7 @@ class DigniValidation {
             : null))?.toString(),
     canReenter: json['can_reenter'] == true,
     requiresSupervisor: json['requires_supervisor'] == true,
+    entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['number'] ?? (json['ticket'] is Map ? (json['ticket'] as Map)['number'] : null))?.toString(),
   );
 }
 
@@ -408,6 +414,30 @@ class DigniApi {
       'device_id': deviceId,
       'idempotency_key': idempotencyKey,
       'action': reentry ? 'reentry' : 'checkin',
+    });
+    return DigniValidation.fromJson(json);
+  }
+
+  Future<DigniValidation> courtesyCheckIn({
+    required int eventId,
+    int? journeyId,
+    required String name,
+    required String rut,
+    required String region,
+    required String commune,
+    required String deviceId,
+    required String idempotencyKey,
+  }) async {
+    final json = await _request('POST', '/check-in', body: {
+      'event_id': eventId,
+      if (journeyId != null) 'journey_id': journeyId,
+      'action': 'courtesy',
+      'name': name,
+      'rut': rut,
+      'region': region,
+      'commune': commune,
+      'device_id': deviceId,
+      'idempotency_key': idempotencyKey,
     });
     return DigniValidation.fromJson(json);
   }
