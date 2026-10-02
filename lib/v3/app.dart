@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
 import 'civil_qr.dart';
+import 'journey_dates.dart';
 import 'session_store.dart';
 
 // A preview binary is explicitly compiled with --dart-define=DIGNI_PREVIEW=true.
@@ -165,9 +166,7 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   String _journeyDate(Map<String, dynamic>? journey) {
-    final raw = journey?['date']?.toString() ?? '';
-    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(raw)) return '';
-    return '${raw.substring(8, 10)}/${raw.substring(5, 7)}/${raw.substring(0, 4)}';
+    return journeyCalendarDate(journey);
   }
 
   String _journeySchedule(Map<String, dynamic>? journey, String fallback) {
@@ -226,9 +225,9 @@ class _DigniV3AppState extends State<DigniV3App> {
       !event.isOwned || (event.isOpen && _hasTodayJourney(event));
 
   String _journeyLabel(Map<String, dynamic> journey, [int? index]) {
-    final name = journey['name']?.toString().trim() ?? '';
-    if (name.isNotEmpty) return name;
-    return 'Jornada ${(index ?? 0) + 1}';
+    // Older API releases sent a name formatted through UTC/Santiago conversion.
+    // Always derive the selector label from the unshifted calendar date.
+    return journeyChoiceLabel(journey, index ?? 0);
   }
 
   Map<String, dynamic>? _journeyForId(DigniEvent event, int? id) {
@@ -657,7 +656,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: await _deviceName(),
-          appVersion: '1.1.4',
+          appVersion: '1.1.5',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
@@ -2957,10 +2956,17 @@ class _DigniV3AppState extends State<DigniV3App> {
                 child: Icon(Icons.person_outline, color: brandRed),
               ),
               const SizedBox(width: 12),
-              Expanded(child: Text(
-                (item['name'] ?? '').toString(),
-                style: TextStyle(color: ink, fontWeight: FontWeight.w800))),
-              sub((item['created_at'] ?? '').toString()),
+              Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text((item['name'] ?? '').toString(),
+                    style: TextStyle(color: ink, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 5),
+                  sub((item['masked_email'] ?? '').toString()),
+                  const SizedBox(height: 4),
+                  sub('Capturado ${_displayAccessTime((item['captured_at'] ?? '').toString())}'),
+                ],
+              )),
             ])),
           ),
       ],
