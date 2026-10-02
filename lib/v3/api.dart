@@ -458,9 +458,7 @@ class DigniApi {
     return DigniValidation.fromJson(json);
   }
 
-  Future<DigniValidation> courtesyCheckIn({
-    required int eventId,
-    int? journeyId,
+  Future<Map<String, dynamic>> assignCourtesy({
     required int ticketId,
     required String name,
     required String rut,
@@ -468,8 +466,6 @@ class DigniApi {
     required String phone,
     required String region,
     required String commune,
-    required String deviceId,
-    required String idempotencyKey,
   }) async {
     final assignment = await _request('POST', '/tickets/$ticketId/assign', body: {
       'ticket_id': ticketId,
@@ -485,23 +481,9 @@ class DigniApi {
     });
     if (assignment['complete'] == false) {
       throw DigniApiException(
-        'La entrada todavía tiene datos pendientes. Revisa nombre, RUT y correo antes de registrar el ingreso.');
+        'La entrada todavía tiene datos pendientes. Revisa nombre, RUT y correo.');
     }
-    final json = await _request('POST', '/check-in', body: {
-      'event_id': eventId,
-      if (journeyId != null) 'journey_id': journeyId,
-      'ticket_id': ticketId,
-      'action': 'checkin',
-      'name': name,
-      'rut': rut,
-      'email': email,
-      'phone': phone,
-      'region': region,
-      'commune': commune,
-      'device_id': deviceId,
-      'idempotency_key': idempotencyKey,
-    });
-    return DigniValidation.fromJson(json);
+    return assignment;
   }
 
   Future<DigniValidation> checkout({
