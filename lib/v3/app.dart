@@ -137,16 +137,29 @@ class _DigniV3AppState extends State<DigniV3App> {
       return _cachedDeviceName!;
     }
     try {
-      final info = await DeviceInfoPlugin().androidInfo;
-      final maker = info.manufacturer.trim();
-      final model = info.model.trim();
-      final value = [maker, model]
-          .where((part) => part.isNotEmpty)
-          .join(' ')
-          .trim();
-      _cachedDeviceName = value.isEmpty ? 'Android' : value;
+      final deviceInfo = DeviceInfoPlugin();
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        final info = await deviceInfo.iosInfo;
+        final model = info.model.trim();
+        final hardware = info.utsname.machine.trim();
+        final value = [model, hardware]
+            .where((part) => part.isNotEmpty)
+            .join(' ')
+            .trim();
+        _cachedDeviceName = value.isEmpty ? 'iPhone' : value;
+      } else {
+        final info = await deviceInfo.androidInfo;
+        final maker = info.manufacturer.trim();
+        final model = info.model.trim();
+        final value = [maker, model]
+            .where((part) => part.isNotEmpty)
+            .join(' ')
+            .trim();
+        _cachedDeviceName = value.isEmpty ? 'Android' : value;
+      }
     } catch (_) {
-      _cachedDeviceName = 'Android';
+      _cachedDeviceName =
+          defaultTargetPlatform == TargetPlatform.iOS ? 'iPhone' : 'Android';
     }
     return _cachedDeviceName!;
   }
