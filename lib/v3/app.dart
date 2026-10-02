@@ -206,11 +206,18 @@ class _DigniV3AppState extends State<DigniV3App> {
   }
 
   int? _todayJourneyId(DigniEvent event) {
+    int? firstToday;
+    int? upcomingToday;
     for (final journey in event.journeys) {
       if (journey['enabled'] == false) continue;
-      if (_journeyIsToday(journey)) return _journeyMapId(journey);
+      if (!_journeyIsToday(journey)) continue;
+      final id = _journeyMapId(journey);
+      firstToday ??= id;
+      final status = _journeyStatusFor(journey, event);
+      if (status == 'JORNADA ABIERTA') return id;
+      if (status.startsWith('ABRE A LAS')) upcomingToday ??= id;
     }
-    return null;
+    return upcomingToday ?? firstToday;
   }
 
   bool _hasTodayJourney(DigniEvent event) => _todayJourneyId(event) != null;
@@ -1912,9 +1919,10 @@ class _DigniV3AppState extends State<DigniV3App> {
     final todayId = _todayJourneyId(event);
     final chosenId = journeyChoices.containsKey(event.id)
         ? journeyChoices[event.id] : todayId;
-    final available = !event.isOwned ||
-        (event.isOpen && todayId != null && chosenId == todayId);
     final chosenJourney = _journeyForId(event, chosenId);
+    final available = !event.isOwned || (event.isOpen &&
+        chosenJourney != null && chosenJourney['enabled'] != false &&
+        _journeyIsToday(chosenJourney));
     final journeyStatus = event.isOwned
         ? _journeyStatusFor(chosenJourney, event) : 'CAPTACIÓN';
     final metadata = <String>[
