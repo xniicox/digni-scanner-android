@@ -650,7 +650,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: await _deviceName(),
-          appVersion: '1.1.3',
+          appVersion: '1.1.4',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
