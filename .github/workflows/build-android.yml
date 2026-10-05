@@ -2,6 +2,8 @@ name: Build DIGNI Scanner Android
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [v3-preview]
 
 jobs:
   android-preview:
@@ -20,6 +22,41 @@ jobs:
       - name: Generate Android project
         run: flutter create --platforms=android --org cl.digni --project-name digni_scanner .
 
+      - name: Configure DIGNI Firebase Android app
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = Path('firebase/google-services.json')
+          data = json.loads(config.read_text())
+          client = next(item for item in data['client']
+                        if item['client_info']['android_client_info']['package_name'] == 'cl.digni.digni_scanner')
+          Path('android/app/google-services.json').write_bytes(config.read_bytes())
+          settings = Path('android/settings.gradle.kts')
+          body = settings.read_text()
+          marker = '    id("com.android.application")'
+          assert marker in body and 'com.google.gms.google-services' not in body
+          body = body.replace(marker, '    id("com.google.gms.google-services") version "4.5.0" apply false\n' + marker, 1)
+          settings.write_text(body)
+          app_build = Path('android/app/build.gradle.kts')
+          body = app_build.read_text()
+          marker = '    id("com.android.application")'
+          assert marker in body and 'com.google.gms.google-services' not in body
+          body = body.replace(marker, marker + '\n    id("com.google.gms.google-services")', 1)
+          app_build.write_text(body)
+          values = {
+              'FIREBASE_PROJECT_ID': data['project_info']['project_id'],
+              'FIREBASE_APP_ID': client['client_info']['mobilesdk_app_id'],
+              'FIREBASE_API_KEY': client['api_key'][0]['current_key'],
+              'FIREBASE_SENDER_ID': data['project_info']['project_number'],
+          }
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              for key, value in values.items():
+                  output.write(f'{key}={value}\n')
+          PY
+
       - name: Configure Android camera and network permissions
         shell: bash
         run: |
@@ -32,6 +69,7 @@ jobs:
               ('android.permission.CAMERA', '    <uses-permission android:name="android.permission.CAMERA"/>'),
               ('android.permission.INTERNET', '    <uses-permission android:name="android.permission.INTERNET"/>'),
               ('android.permission.VIBRATE', '    <uses-permission android:name="android.permission.VIBRATE"/>'),
+              ('android.permission.POST_NOTIFICATIONS', '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>'),
           ]
           additions = [element for name, element in requested if name not in contents]
           if 'android.hardware.camera' not in contents:
@@ -67,17 +105,18 @@ jobs:
         run: dart run flutter_launcher_icons
 
       - name: Check Dart and Flutter code
-        run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/civil_qr.dart lib/v3/journey_dates.dart lib/v3/session_store.dart test/civil_qr_test.dart test/journey_dates_test.dart --no-fatal-infos --no-fatal-warnings
+        run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/push.dart lib/v3/civil_qr.dart lib/v3/journey_dates.dart lib/v3/session_store.dart test/civil_qr_test.dart test/journey_dates_test.dart --no-fatal-infos --no-fatal-warnings
 
       - name: Test QR and journey dates
         run: flutter test test/civil_qr_test.dart test/journey_dates_test.dart
 
-      - name: Build production APK
-        run: flutter build apk --release --dart-define=DIGNI_PREVIEW=false --dart-define=DIGNI_API_BASE=https://makita.cl
+      - name: Build APK candidate for validation
+        run: |
+          flutter build apk --release --dart-define=DIGNI_PREVIEW=false --dart-define=DIGNI_API_BASE=https://makita.cl --dart-define=DIGNI_FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" --dart-define=DIGNI_FIREBASE_APP_ID="$FIREBASE_APP_ID" --dart-define=DIGNI_FIREBASE_API_KEY="$FIREBASE_API_KEY" --dart-define=DIGNI_FIREBASE_SENDER_ID="$FIREBASE_SENDER_ID"
 
-      - name: Upload APK
+      - name: Upload APK candidate
         uses: actions/upload-artifact@v4
         with:
-          name: digni-scanner-1.1.5-production
+          name: digni-scanner-1.2.0-build-candidate
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
