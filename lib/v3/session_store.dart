@@ -23,6 +23,8 @@ class SessionStore {
   static const _preview = 'digni_preview_session';
   static const _lastSync = 'digni_last_sync_at';
   static const _pending = 'digni_pending_operations';
+  static const _identity = 'digni_identity_snapshot';
+  static const _identityEscalations = 'digni_identity_escalations';
 
   Future<String?> get accessToken => storage.read(key: _access);
   Future<String?> get refreshToken => storage.read(key: _refresh);
@@ -98,6 +100,91 @@ class SessionStore {
     }
   }
 
+  /// Full identity data remains only in platform encrypted storage. It is
+  /// bound to one operator's active journey and never enters normal attendee
+  /// caches, logs, analytics or push payloads.
+  Future<void> saveIdentitySnapshot(int eventId, int journeyId,
+      DateTime expiresAt, List<Map<String, dynamic>> items) async {
+    await storage.write(key: _identity, value: jsonEncode({
+      'event_id': eventId,
+      'journey_id': journeyId,
+      'expires_at': expiresAt.toUtc().toIso8601String(),
+      'items': items,
+    }));
+  }
+
+  Future<List<Map<String, dynamic>>> identitySnapshot(
+      int eventId, int journeyId) async {
+    final raw = await storage.read(key: _identity);
+    if (raw == null) return const [];
+    try {
+      final snapshot = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final expiry = DateTime.tryParse(snapshot['expires_at']?.toString() ?? '');
+      if (snapshot['event_id'] != eventId ||
+          snapshot['journey_id'] != journeyId || expiry == null ||
+          !expiry.isAfter(DateTime.now().toUtc())) {
+        await clearIdentitySnapshot();
+        return const [];
+      }
+      return ((snapshot['items'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item)).toList();
+    } catch (_) {
+      await clearIdentitySnapshot();
+      return const [];
+    }
+  }
+
+  Future<void> clearIdentitySnapshot() => storage.delete(key: _identity);
+
+  Future<String?> consumeIdentityProof(
+      int eventId, int journeyId, int ticketId) async {
+    final raw = await storage.read(key: _identity);
+    if (raw == null) return null;
+    try {
+      final snapshot = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final expiry = DateTime.tryParse(snapshot['expires_at']?.toString() ?? '');
+      if (snapshot['event_id'] != eventId || snapshot['journey_id'] != journeyId ||
+          expiry == null || !expiry.isAfter(DateTime.now().toUtc())) return null;
+      final items = ((snapshot['items'] as List?) ?? const [])
+          .whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
+      for (final item in items) {
+        if (int.tryParse((item['ticket_id'] ?? '').toString()) != ticketId) continue;
+        final proofs = ((item['proofs'] as List?) ?? const []).map((x) => x.toString()).toList();
+        if (proofs.isEmpty) return null;
+        final selected = proofs.removeAt(0);
+        item['proofs'] = proofs;
+        snapshot['items'] = items;
+        await storage.write(key: _identity, value: jsonEncode(snapshot));
+        return selected;
+      }
+    } catch (_) {
+      await clearIdentitySnapshot();
+    }
+    return null;
+  }
+
+  Future<void> markSupervisorEscalated(int ticketId) async {
+    final raw = await storage.read(key: _identityEscalations);
+    final ids = <String>{...(raw ?? '').split(',').where((value) => value.isNotEmpty)};
+    ids.add(ticketId.toString());
+    await storage.write(key: _identityEscalations, value: ids.join(','));
+  }
+
+  Future<bool> supervisorEscalated(int ticketId) async {
+    final raw = await storage.read(key: _identityEscalations);
+    return (raw ?? '').split(',').contains(ticketId.toString());
+  }
+
+  Future<void> clearSensitiveCaches() async {
+    final keys = (await storage.readAll()).keys
+        .where((key) => key == _identity || key == _identityEscalations ||
+            key.startsWith('digni_attendees_'));
+    for (final key in keys) {
+      await storage.delete(key: key);
+    }
+  }
+
   Future<String> ensureDeviceId() async {
     final current = await deviceId;
     if (current != null && current.isNotEmpty) return current;
@@ -120,6 +207,7 @@ class SessionStore {
       storage.write(key: _role, value: session.operatorRole),
       if (deviceId != null) storage.write(key: _device, value: deviceId),
       storage.delete(key: _preview),
+      storage.delete(key: _identity),
     ]);
   }
 
@@ -169,6 +257,7 @@ class SessionStore {
 
   Future<void> clear() async {
     // Device id is intentionally retained to keep a stable revocable device identity.
+    await clearSensitiveCaches();
     await Future.wait([
       storage.delete(key: _access),
       storage.delete(key: _refresh),

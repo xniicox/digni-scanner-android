@@ -69,6 +69,7 @@ class DigniEvent {
     this.logoUrl,
     this.captureId,
     this.captureCount = 0,
+    this.requiresIdentityCheck = false,
     this.journeys = const [],
   });
 
@@ -84,6 +85,7 @@ class DigniEvent {
   final String? logoUrl;
   final int? captureId;
   final int captureCount;
+  final bool requiresIdentityCheck;
   final List<Map<String, dynamic>> journeys;
 
   bool get isOwned => mode == 'owned';
@@ -102,6 +104,7 @@ class DigniEvent {
     logoUrl: json['logo_url']?.toString(),
     captureId: (json['capture_id'] as num?)?.toInt(),
     captureCount: (json['capture_count'] as num?)?.toInt() ?? 0,
+    requiresIdentityCheck: json['requires_identity_check'] == true,
     journeys: ((json['journeys'] as List?) ?? const [])
       .whereType<Map>()
       .map((x) => Map<String, dynamic>.from(x))
@@ -168,6 +171,7 @@ class DigniValidation {
     this.maskedRut,
     this.canReenter = false,
     this.requiresSupervisor = false,
+    this.requiresIdentityCheck = false,
     this.entryNumber,
     this.courtesy = false,
     this.accessNumber,
@@ -184,6 +188,7 @@ class DigniValidation {
   final String? maskedRut;
   final bool canReenter;
   final bool requiresSupervisor;
+  final bool requiresIdentityCheck;
   final String? entryNumber;
   final bool courtesy;
   final int? accessNumber;
@@ -205,6 +210,7 @@ class DigniValidation {
             : null))?.toString(),
     canReenter: json['can_reenter'] == true,
     requiresSupervisor: json['requires_supervisor'] == true,
+    requiresIdentityCheck: json['requires_identity_check'] == true,
     courtesy: json['courtesy'] == true,
     entryNumber: (json['entry_number'] ?? json['ticket_number'] ?? json['number'] ?? (json['ticket'] is Map ? (json['ticket'] as Map)['number'] : null))?.toString(),
     accessNumber: int.tryParse((json['access_number'] ?? '').toString()),
@@ -456,6 +462,58 @@ class DigniApi {
       'action': reentry ? 'reentry' : 'checkin',
     });
     return DigniValidation.fromJson(json);
+  }
+
+  Future<Map<String, dynamic>> revealIdentity({
+    required int eventId, required int journeyId, required int ticketId,
+  }) => _request('POST', '/identity/reveal', body: {
+    'event_id': eventId, 'journey_id': journeyId, 'ticket_id': ticketId,
+  });
+
+  Future<Map<String, dynamic>> requestSupervisor(int reviewId) =>
+      _request('POST', '/identity/request-supervisor', body: {'review_id': reviewId});
+
+  Future<Map<String, dynamic>> identityRequest(int reviewId) =>
+      _request('GET', '/identity/requests/$reviewId');
+
+  Future<List<Map<String, dynamic>>> identityRequests(int eventId) async {
+    final json = await _request('GET', '/identity/requests', query: {'event_id': '$eventId'});
+    return ((json['items'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item)).toList();
+  }
+
+  Future<Map<String, dynamic>> decideIdentityRequest(
+      int reviewId, {required bool approve, String reason = ''}) =>
+      _request('POST', '/identity/requests/$reviewId/decision', body: {
+        'decision': approve ? 'approve' : 'reject', 'reason': reason,
+      });
+
+  Future<DigniValidation> approveIdentityEntry({
+    required int eventId, required int journeyId, required int ticketId,
+    required String deviceId, required String idempotencyKey,
+    required bool reentry, int? reviewId, String? offlineProof,
+    DateTime? verifiedAt,
+  }) async {
+    final json = await _request('POST', '/identity/approve-entry', body: {
+      'event_id': eventId, 'journey_id': journeyId, 'ticket_id': ticketId,
+      'device_id': deviceId, 'idempotency_key': idempotencyKey,
+      'action': reentry ? 'reentry' : 'checkin',
+      if (reviewId != null) 'review_id': reviewId,
+      if (offlineProof != null) 'offline_proof': offlineProof,
+      if (verifiedAt != null) 'client_verified_at': verifiedAt.toUtc().toIso8601String(),
+    });
+    return DigniValidation.fromJson(json);
+  }
+
+  Future<Map<String, dynamic>> identitySnapshot(
+      int eventId, int journeyId, int page) =>
+      _request('GET', '/identity/offline-snapshot', query: {
+        'event_id': '$eventId', 'journey_id': '$journeyId', 'page': '$page',
+      });
+
+  Future<void> registerPushToken(String token) async {
+    await _request('POST', '/device/push-token', body: {'token': token});
   }
 
   Future<Map<String, dynamic>> assignCourtesy({

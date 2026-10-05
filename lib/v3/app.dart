@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -13,6 +14,7 @@ import 'api.dart';
 import 'civil_qr.dart';
 import 'journey_dates.dart';
 import 'session_store.dart';
+import 'push.dart';
 
 // A preview binary is explicitly compiled with --dart-define=DIGNI_PREVIEW=true.
 // A production binary never accepts demo credentials or demo ticket codes.
@@ -29,7 +31,7 @@ const amber = Color(0xFFF9A700);
 const red = Color(0xFFEB2217);
 
 enum View { splash, signingOut, login, events, own, external, scanner, result, courtesy, people,
-  captures, info, account }
+  captures, info, account, supervisorRequests }
 enum Tone { good, warn, bad }
 
 class Decision {
@@ -37,7 +39,9 @@ class Decision {
     {this.name, this.rut, this.ticketId, this.reenter = false,
       this.supervisor = false, this.confirmEntry = false,
       this.checkout = false, this.entryNumber, this.courtesy = false,
-      this.accessNumber, this.usedAt, this.usedBy});
+      this.accessNumber, this.usedAt, this.usedBy,
+      this.identityRequired = false, this.identityApproved = false,
+      this.reviewId, this.offlineProof});
   final Tone tone;
   final String title, message;
   final String? name, rut;
@@ -50,6 +54,9 @@ class Decision {
   final bool courtesy;
   final int? accessNumber;
   final String? usedAt, usedBy;
+  final bool identityRequired, identityApproved;
+  final int? reviewId;
+  final String? offlineProof;
 }
 
 class DigniV3App extends StatefulWidget {
@@ -100,10 +107,14 @@ class _DigniV3AppState extends State<DigniV3App> {
   Timer? refreshTimer;
   Timer? inactivityTimer;
   StreamSubscription<List<ConnectivityResult>>? connectivitySubscription;
+  StreamSubscription<String>? pushTokenSubscription;
+  StreamSubscription<RemoteMessage>? pushMessageSubscription;
+  StreamSubscription<RemoteMessage>? pushOpenSubscription;
   bool online = true;
   DateTime? lastSyncAt;
   int pendingOperations = 0;
   int offlineMaxMinutes = 30;
+  List<Map<String, dynamic>> supervisorRequests = const [];
   String? twoFactorChallenge;
 
   List<DigniEvent> remoteEvents = const [];
@@ -291,6 +302,10 @@ class _DigniV3AppState extends State<DigniV3App> {
     super.initState();
     _touchActivity();
     refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (selectedEvent?.requiresIdentityCheck == true &&
+          _journeyStatus() != 'JORNADA ABIERTA') {
+        unawaited(sessions.clearSensitiveCaches());
+      }
       unawaited(_refreshRemoteData());
     });
     unawaited(_watchConnectivity());
@@ -327,7 +342,15 @@ class _DigniV3AppState extends State<DigniV3App> {
       return;
     }
     try {
-      final result = await client.sync(pending);
+      final operator = await sessions.operator();
+      final operatorId = operator['id'];
+      final ownPending = pending.where((item) =>
+        item['operator_id']?.toString() == operatorId && operatorId != null).toList();
+      if (ownPending.isEmpty) {
+        if (mounted) setState(() => pendingOperations = pending.length);
+        return;
+      }
+      final result = await client.sync(ownPending);
       final items = (result['items'] as List?) ?? const [];
       final rejected = <String>{};
       for (final item in items.whereType<Map>()) {
@@ -387,9 +410,12 @@ class _DigniV3AppState extends State<DigniV3App> {
     required int ticketId,
     required String action,
     required String deviceId,
+    String? offlineProof,
+    DateTime? verifiedAt,
   }) async {
     final now = DateTime.now().toUtc();
     final localId = 'local-${now.microsecondsSinceEpoch}';
+    final operator = await sessions.operator();
     await sessions.queueOperation({
       'local_id': localId,
       'event_id': eventId,
@@ -398,6 +424,9 @@ class _DigniV3AppState extends State<DigniV3App> {
       'action': action,
       'idempotency_key': _idempotencyKey(deviceId),
       'client_created_at': now.toIso8601String(),
+      'operator_id': operator['id'],
+      if (offlineProof != null) 'offline_proof': offlineProof,
+      if (verifiedAt != null) 'client_verified_at': verifiedAt.toUtc().toIso8601String(),
     });
     final count = await sessions.pendingOperationCount();
     if (mounted) {
@@ -412,7 +441,51 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     if (event == null || !event.isOwned) return null;
     final cached = await sessions.attendeeCache(event.id, journeyId);
-    final needle = raw.trim().toUpperCase();
+    final needle = CivilQr.normalizePayload(raw).trim().toUpperCase();
+    if (event.requiresIdentityCheck) {
+      if (journeyId == null) return null;
+      final identities = await sessions.identitySnapshot(event.id, journeyId!);
+      final civil = CivilQr.identity(raw);
+      String compact(String value) => value.toUpperCase().replaceAll(RegExp(r'[^0-9K]'), '');
+      final rut = compact(civil['rut'] ?? '');
+      Map<String, dynamic>? item;
+      for (final candidate in identities) {
+        if ((candidate['entry_number'] ?? '').toString().trim().toUpperCase() == needle ||
+            (rut.isNotEmpty && compact((candidate['rut'] ?? '').toString()) == rut)) {
+          item = candidate;
+          break;
+        }
+      }
+      if (item == null) return const Decision(Tone.bad,
+        'Identidad no disponible sin conexión',
+        'Conéctate para consultar una copia autorizada de esta jornada.');
+      final proofs = (item['proofs'] as List?) ?? const [];
+      if (proofs.isEmpty) {
+        return const Decision(Tone.warn, 'Requiere supervisor',
+          'Esta entrada tiene una revisión escalada. Conéctate para conocer la resolución.');
+      }
+      final ticket = int.tryParse((item['ticket_id'] ?? '').toString());
+      if (ticket != null && await sessions.supervisorEscalated(ticket)) {
+        return const Decision(Tone.warn, 'Requiere supervisor',
+          'Este teléfono solicitó asistencia. Debes esperar la resolución con conexión.');
+      }
+      final pending = await sessions.pendingOperations();
+      if (pending.any((op) => op['ticket_id'] == ticket &&
+          op['journey_id'] == journeyId &&
+          (op['action'] == 'identity_checkin' || op['action'] == 'identity_reentry'))) {
+        return const Decision(Tone.warn, 'Ingreso pendiente de sincronización',
+          'Este teléfono ya registró un ingreso offline para esta entrada.');
+      }
+      final attendance = cached.where((row) => row['ticket_id'] == ticket || row['id'] == ticket).toList();
+      final status = attendance.isEmpty ? 'registered' : (attendance.first['status'] ?? 'registered').toString();
+      final alreadyIn = status == 'checked_in' || status == 'reentry' || status == 'checked_out';
+      return Decision(Tone.warn, 'Comprobar identidad',
+        'Compara la cédula con el nombre y RUT antes de aprobar ${alreadyIn ? 'el reingreso' : 'el ingreso'}.',
+        name: item['name']?.toString(), ticketId: ticket,
+        entryNumber: item['entry_number']?.toString(),
+        identityRequired: true, reenter: alreadyIn,
+        offlineProof: proofs.first.toString());
+    }
     Map<String, dynamic>? match;
     for (final item in cached) {
       final code = (item['code'] ?? item['entry_number'] ?? '')
@@ -473,6 +546,12 @@ class _DigniV3AppState extends State<DigniV3App> {
           final summary = await api!.summary(event.id, journeyId: journeyId);
           if (!mounted) return;
           setState(() => remoteSummary = summary);
+          if (event.requiresIdentityCheck && journeyId != null) {
+            try { await _refreshIdentitySnapshot(event.id, journeyId!); }
+            catch (_) { await sessions.clearIdentitySnapshot(); }
+          } else {
+            await sessions.clearIdentitySnapshot();
+          }
           if (view == View.people) await _loadPeople();
         } else if (view == View.captures) {
           await _loadCaptures();
@@ -527,6 +606,33 @@ class _DigniV3AppState extends State<DigniV3App> {
     }
   }
 
+  Future<void> _refreshIdentitySnapshot(int eventId, int selectedJourneyId) async {
+    if (api == null || !online) return;
+    if (_journeyStatus() != 'JORNADA ABIERTA') {
+      await sessions.clearSensitiveCaches();
+      return;
+    }
+    if ((await sessions.identitySnapshot(eventId, selectedJourneyId)).isNotEmpty) return;
+    final all = <Map<String, dynamic>>[];
+    DateTime? expires;
+    var complete = false;
+    for (var page = 1; page <= 100; page++) {
+      final response = await api!.identitySnapshot(eventId, selectedJourneyId, page);
+      final pageItems = ((response['items'] as List?) ?? const [])
+          .whereType<Map>().map((item) => Map<String, dynamic>.from(item));
+      all.addAll(pageItems);
+      final until = DateTime.tryParse(response['expires_at']?.toString() ?? '');
+      if (until == null) throw StateError('La copia de identidad no tiene vencimiento.');
+      if (expires == null || until.isBefore(expires)) expires = until;
+      if (response['has_more'] != true) { complete = true; break; }
+    }
+    if (!complete || expires == null) {
+      await sessions.clearIdentitySnapshot();
+      throw StateError('La copia de identidad está incompleta.');
+    }
+    await sessions.saveIdentitySnapshot(eventId, selectedJourneyId, expires, all);
+  }
+
   Future<void> _bootstrap() async {
     final splashDelay =
         Future<void>.delayed(const Duration(milliseconds: 1200));
@@ -566,6 +672,37 @@ class _DigniV3AppState extends State<DigniV3App> {
       authed = restored;
       view = restored ? View.events : View.login;
     });
+    if (restored) unawaited(_setupPush());
+  }
+
+  Future<void> _setupPush() async {
+    if (preview || !digniFirebaseReady || !authed || api == null) return;
+    try {
+      final messaging = FirebaseMessaging.instance;
+      final permission = await messaging.requestPermission();
+      if (permission.authorizationStatus == AuthorizationStatus.denied) return;
+      final token = await messaging.getToken();
+      if (token != null && token.isNotEmpty) await api!.registerPushToken(token);
+      await pushTokenSubscription?.cancel();
+      pushTokenSubscription = messaging.onTokenRefresh.listen((token) {
+        if (authed && api != null) unawaited(api!.registerPushToken(token));
+      });
+      await pushMessageSubscription?.cancel();
+      pushMessageSubscription = FirebaseMessaging.onMessage.listen((message) {
+        if (!authed || message.data['type'] != 'identity_request') return;
+        messengerKey.currentState?.showSnackBar(const SnackBar(
+          content: Text('Un operador necesita ayuda para validar acceso.')));
+        if (canResolveIdentity) unawaited(_loadSupervisorRequests());
+      });
+      await pushOpenSubscription?.cancel();
+      pushOpenSubscription = FirebaseMessaging.onMessageOpenedApp.listen((message) {
+        if (!authed || !canResolveIdentity || message.data['type'] != 'identity_request') return;
+        go(View.supervisorRequests);
+        unawaited(_loadSupervisorRequests());
+      });
+    } catch (_) {
+      // FCM is optional for transport; the supervisor list remains available.
+    }
   }
 
   @override
@@ -576,6 +713,9 @@ class _DigniV3AppState extends State<DigniV3App> {
     reconnectTimer?.cancel();
     searchDebounce?.cancel();
     connectivitySubscription?.cancel();
+    pushTokenSubscription?.cancel();
+    pushMessageSubscription?.cancel();
+    pushOpenSubscription?.cancel();
     scannerController.dispose();
     player.dispose();
     email.dispose();
@@ -656,7 +796,7 @@ class _DigniV3AppState extends State<DigniV3App> {
           pin: pin.text,
           deviceId: deviceId,
           deviceName: await _deviceName(),
-          appVersion: '1.1.5',
+          appVersion: '1.2.0',
         );
         operatorName = session.operatorName;
         operatorRole = session.operatorRole;
@@ -674,6 +814,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         view = View.events;
       });
       _touchActivity();
+      unawaited(_setupPush());
     } on DigniTwoFactorRequired catch (error) {
       if (!mounted) return;
       setState(() {
@@ -726,6 +867,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         view = View.events;
       });
       _touchActivity();
+      unawaited(_setupPush());
     } on DigniApiException catch (error) {
       if (!mounted) return;
       setState(() { busy = false; message = error.message; });
@@ -739,6 +881,9 @@ class _DigniV3AppState extends State<DigniV3App> {
     if (view == View.signingOut) return;
     if (mounted) setState(() => view = View.signingOut);
     inactivityTimer?.cancel();
+    if (api != null && online && digniFirebaseReady) {
+      try { await api!.registerPushToken(''); } catch (_) {}
+    }
     if (preview) {
       await sessions.clear();
     } else if (api != null) {
@@ -779,6 +924,9 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Future<void> selectRemoteEvent(DigniEvent event) async {
     final chosenId = journeyChoices[event.id] ?? _todayJourneyId(event);
+    if (selectedEvent?.id != event.id || journeyId != chosenId) {
+      await sessions.clearSensitiveCaches();
+    }
     setState(() {
       selectedEvent = event;
       selectedJourney = _journeyForId(event, chosenId);
@@ -799,6 +947,12 @@ class _DigniV3AppState extends State<DigniV3App> {
       if (api != null) {
         if (event.isOwned) {
           remoteSummary = await api!.summary(event.id, journeyId: journeyId);
+          if (event.requiresIdentityCheck && journeyId != null) {
+            try { await _refreshIdentitySnapshot(event.id, journeyId!); }
+            catch (_) { await sessions.clearIdentitySnapshot(); }
+          } else {
+            await sessions.clearIdentitySnapshot();
+          }
         }
         await sessions.markSynced();
         lastSyncAt = await sessions.lastSyncAt;
@@ -923,7 +1077,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     setState(() => busy = true);
     try {
       if (!online) {
-        final offline = await _offlineScan(CivilQr.normalizePayload(raw));
+        final offline = await _offlineScan(raw);
         if (offline != null) {
           _showDecision(offline);
           if (offline.tone == Tone.bad) await _rejectionFeedback();
@@ -944,7 +1098,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       );
       if ((validation.outcome == 'valid' ||
               validation.outcome == 'approved') &&
-          validation.ticketId != null) {
+          validation.ticketId != null &&
+          !event.requiresIdentityCheck && !validation.requiresIdentityCheck) {
         // A first valid scan is an admission, not a second confirmation step.
         // Register it immediately so the operator receives the green ticket,
         // sound and access number in the same flow.
@@ -965,7 +1120,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     } on DigniApiException catch (error) {
       if (error.statusCode == null || !online) {
         if (mounted) setState(() => online = false);
-        final offline = await _offlineScan(CivilQr.normalizePayload(raw));
+        final offline = await _offlineScan(raw);
         if (offline != null) {
           _showDecision(offline);
           if (offline.tone == Tone.bad) await _rejectionFeedback();
@@ -1019,7 +1174,10 @@ class _DigniV3AppState extends State<DigniV3App> {
 
   Future<void> _showServerDecision(DigniValidation value) async {
     var tone = Tone.bad;
-    if (value.outcome == 'approved' ||
+    if (value.requiresIdentityCheck &&
+        (value.outcome == 'approved' || value.outcome == 'already_used')) {
+      tone = Tone.warn;
+    } else if (value.outcome == 'approved' ||
         value.outcome == 'checked_out' ||
         value.outcome == 'checked_in' ||
         value.outcome == 'reentry_approved') {
@@ -1077,6 +1235,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       entryNumber: value.entryNumber ?? value.accessNumber?.toString(),
       accessNumber: value.accessNumber,
       confirmEntry: false,
+      identityRequired: value.requiresIdentityCheck &&
+          (value.outcome == 'approved' || value.outcome == 'already_used'),
       usedAt: usedAt,
       usedBy: usedBy,
     ));
@@ -1092,6 +1252,186 @@ class _DigniV3AppState extends State<DigniV3App> {
       decision = result;
       view = View.result;
     });
+  }
+
+  Future<void> _verifyIdentity() async {
+    final current = decision;
+    final event = selectedEvent;
+    final selectedId = journeyId;
+    if (current == null || !current.identityRequired || current.ticketId == null ||
+        event == null || selectedId == null || busy) return;
+    if (current.reviewId != null) {
+      await _checkIdentityResolution();
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      Map<String, dynamic> identity;
+      if (online && api != null) {
+        identity = await api!.revealIdentity(
+          eventId: event.id, journeyId: selectedId, ticketId: current.ticketId!);
+      } else {
+        final items = await sessions.identitySnapshot(event.id, selectedId);
+        identity = items.firstWhere(
+          (item) => int.tryParse((item['ticket_id'] ?? '').toString()) == current.ticketId,
+          orElse: () => <String, dynamic>{});
+        if (identity.isEmpty) throw DigniApiException(
+          'La copia cifrada de esta entrada no está disponible o venció. Conéctate para verificarla.');
+      }
+      if (!mounted) return;
+      final rut = (identity['rut'] ?? '').toString();
+      final name = (identity['name'] ?? '').toString();
+      final reviewId = int.tryParse((identity['review_id'] ?? '').toString());
+      final proofs = (identity['proofs'] as List?) ?? const [];
+      final proof = proofs.isNotEmpty ? proofs.first.toString() : current.offlineProof;
+      final supervisorOnly = identity['supervisor_only'] == true;
+      if (!online && proof != null && proof.isNotEmpty) {
+        await _queueOfflineOperation(eventId: event.id, journeyId: selectedId,
+          ticketId: current.ticketId!, action: 'identity_view',
+          deviceId: await sessions.ensureDeviceId(),
+          offlineProof: proof, verifiedAt: DateTime.now());
+      }
+      final choice = await showModalBottomSheet<String>(
+        context: navigatorKey.currentState!.overlay!.context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (sheetContext) => SafeArea(child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 8, 22, 28),
+          child: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('Verificar identidad', style: Theme.of(sheetContext).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            const Text('Compara visualmente estos datos con la cédula presentada. '
+                'La consulta queda registrada.'),
+            const SizedBox(height: 20),
+            Text(name, style: Theme.of(sheetContext).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text('RUT $rut', style: Theme.of(sheetContext).textTheme.titleMedium),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: supervisorOnly ? null : () => Navigator.pop(sheetContext, 'approve'),
+              icon: const Icon(Icons.how_to_reg_rounded),
+              label: Text(current.reenter ? 'Aprobar reingreso' : 'Aprobar ingreso')),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: online && reviewId != null
+                  ? () => Navigator.pop(sheetContext, 'supervisor') : null,
+              icon: const Icon(Icons.support_agent_rounded),
+              label: const Text('Solicitar asistencia de supervisor')),
+            if (!online) const Text('La asistencia de supervisor requiere conexión.'),
+          ]),
+        )),
+      );
+      if (!mounted || choice == null) return;
+      if (choice == 'approve') {
+        await _approveVerifiedIdentity(current, reviewId: reviewId, offlineProof: proof);
+      } else if (choice == 'supervisor' && reviewId != null) {
+        final response = await api!.requestSupervisor(reviewId);
+        await sessions.markSupervisorEscalated(current.ticketId!);
+        if (!mounted) return;
+        _showDecision(Decision(Tone.warn, 'Asistencia solicitada',
+          'El supervisor debe resolver la solicitud. No se ha registrado el ingreso.',
+          name: current.name, rut: current.rut,
+          ticketId: current.ticketId, entryNumber: current.entryNumber,
+          reenter: current.reenter, identityRequired: true,
+          reviewId: int.tryParse((response['id'] ?? reviewId).toString()) ?? reviewId));
+      }
+    } on DigniApiException catch (error) {
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (_) {
+      if (mounted) messengerKey.currentState?.showSnackBar(const SnackBar(
+        content: Text('No se pudo abrir la verificación. Intenta nuevamente.')));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _approveVerifiedIdentity(Decision current,
+      {int? reviewId, String? offlineProof}) async {
+    final event = selectedEvent;
+    final selectedId = journeyId;
+    if (event == null || selectedId == null || current.ticketId == null) return;
+    final device = await sessions.ensureDeviceId();
+    final verifiedAt = DateTime.now();
+    if (!online || api == null) {
+      if (reviewId != null || offlineProof == null || offlineProof.isEmpty) {
+        messengerKey.currentState?.showSnackBar(const SnackBar(
+          content: Text('La asistencia de supervisor no puede aprobarse sin conexión.')));
+        return;
+      }
+      final oneUseProof = await sessions.consumeIdentityProof(
+        event.id, selectedId, current.ticketId!);
+      if (oneUseProof == null) {
+        messengerKey.currentState?.showSnackBar(const SnackBar(
+          content: Text('La verificación offline venció o ya fue utilizada. Reconecta.')));
+        return;
+      }
+      await _queueOfflineOperation(eventId: event.id, journeyId: selectedId,
+        ticketId: current.ticketId!,
+        action: current.reenter ? 'identity_reentry' : 'identity_checkin',
+        deviceId: device, offlineProof: oneUseProof, verifiedAt: verifiedAt);
+      _showDecision(Decision(Tone.warn, 'Ingreso pendiente de sincronización',
+        'La identidad fue comprobada en este teléfono. El ingreso se confirmará al reconectar.',
+        name: current.name, rut: current.rut,
+        ticketId: current.ticketId, entryNumber: current.entryNumber));
+      return;
+    }
+    final result = await api!.approveIdentityEntry(
+      eventId: event.id, journeyId: selectedId, ticketId: current.ticketId!,
+      deviceId: device, idempotencyKey: _idempotencyKey(device),
+      reentry: current.reenter, reviewId: reviewId,
+      offlineProof: offlineProof, verifiedAt: verifiedAt);
+    if (mounted) await _showServerDecision(result);
+  }
+
+  Future<void> _checkIdentityResolution() async {
+    final current = decision;
+    if (current?.reviewId == null || api == null || !online) return;
+    try {
+      final response = await api!.identityRequest(current!.reviewId!);
+      if (!mounted) return;
+      final status = (response['status'] ?? '').toString();
+      if (status == 'approved') {
+        final utcExpiry = (response['expires_at'] ?? '').toString().replaceFirst(' ', 'T');
+        final expiry = DateTime.tryParse('${utcExpiry}Z');
+        if (expiry == null || !expiry.toUtc().isAfter(DateTime.now().toUtc())) {
+          _showDecision(Decision(Tone.warn, 'Autorización vencida',
+            'La aprobación del supervisor duraba cinco minutos. Verifica de nuevo y solicita asistencia.',
+            name: current.name, ticketId: current.ticketId,
+            entryNumber: current.entryNumber, identityRequired: true));
+          return;
+        }
+        _showDecision(Decision(Tone.good, 'Supervisor aprobó la identidad',
+          'Confirma que la persona continúa presente y pulsa «Aprobar ingreso».',
+          name: current.name, rut: current.rut,
+          ticketId: current.ticketId, entryNumber: current.entryNumber,
+          reenter: current.reenter, identityRequired: true,
+          identityApproved: true, reviewId: current.reviewId));
+      } else if (status == 'rejected') {
+        _showDecision(Decision(Tone.bad, 'Solicitud rechazada',
+          (response['reason'] ?? 'El supervisor rechazó la solicitud.').toString(),
+          name: current.name, ticketId: current.ticketId,
+          entryNumber: current.entryNumber));
+      } else {
+        messengerKey.currentState?.showSnackBar(const SnackBar(
+          content: Text('La solicitud sigue pendiente de resolución.')));
+      }
+    } on DigniApiException catch (error) {
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(content: Text(error.message)));
+    }
+  }
+
+  Future<void> _finalizeSupervisorEntry() async {
+    final current = decision;
+    if (current == null || !current.identityApproved || current.reviewId == null || busy) return;
+    setState(() => busy = true);
+    try {
+      await _approveVerifiedIdentity(current, reviewId: current.reviewId);
+    } on DigniApiException catch (error) {
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   void _openCourtesyForm() {
@@ -1127,6 +1467,14 @@ class _DigniV3AppState extends State<DigniV3App> {
       );
       if (!mounted) return;
       if (_journeyStatus() == 'JORNADA ABIERTA') {
+        if (event.requiresIdentityCheck) {
+          _showDecision(Decision(Tone.warn, 'Comprobar identidad',
+            'Los datos se guardaron. Compara la cédula antes de registrar el ingreso.',
+            name: courtesyName.text.trim(), ticketId: decision!.ticketId!,
+            entryNumber: (assignment['entry_number'] ?? decision?.entryNumber)?.toString(),
+            identityRequired: true));
+          return;
+        }
         final result = await client.checkIn(
           eventId: event.id, journeyId: journeyId,
           ticketId: decision!.ticketId!, deviceId: deviceId,
@@ -1156,6 +1504,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final client = api;
     if (current == null || !current.confirmEntry || event == null ||
         current.ticketId == null || !_eventAvailableToday(event)) return;
+    if (event.requiresIdentityCheck) return;
     final deviceId = await sessions.ensureDeviceId();
     if (!online || client == null) {
       await _queueOfflineOperation(
@@ -1324,6 +1673,7 @@ class _DigniV3AppState extends State<DigniV3App> {
     final event = selectedEvent;
     final client = api;
     if (event == null || current.ticketId == null || !_eventAvailableToday(event)) return;
+    if (event.requiresIdentityCheck) return;
     final deviceId = await sessions.ensureDeviceId();
     if (!online || client == null) {
       await _queueOfflineOperation(
@@ -1562,6 +1912,106 @@ class _DigniV3AppState extends State<DigniV3App> {
     });
   }
 
+  bool get canResolveIdentity =>
+      operatorRole.toLowerCase().contains('super') ||
+      operatorRole.toLowerCase().contains('admin');
+
+  Future<void> _loadSupervisorRequests() async {
+    if (!canResolveIdentity || api == null || !online) return;
+    try {
+      final all = <Map<String, dynamic>>[];
+      for (final event in remoteEvents.where((item) => item.isOwned && item.requiresIdentityCheck)) {
+        final rows = await api!.identityRequests(event.id);
+        for (final row in rows) {
+          all.add({...row, 'event_title': event.title});
+        }
+      }
+      if (mounted) setState(() => supervisorRequests = all);
+    } on DigniApiException catch (error) {
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(content: Text(error.message)));
+    }
+  }
+
+  Future<void> _resolveSupervisorRequest(int id, {required bool approve}) async {
+    final client = api;
+    if (client == null || !online || busy) return;
+    var reason = '';
+    if (!approve) {
+      final controller = TextEditingController();
+      final confirmed = await showDialog<bool>(
+        context: navigatorKey.currentState!.overlay!.context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Motivo del rechazo'),
+          content: TextField(controller: controller, maxLines: 3,
+            decoration: const InputDecoration(hintText: 'Explica por qué rechazas la identidad')),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Rechazar')),
+          ],
+        ),
+      );
+      reason = controller.text.trim();
+      controller.dispose();
+      if (confirmed != true) return;
+      if (reason.length < 5) {
+        messengerKey.currentState?.showSnackBar(const SnackBar(
+          content: Text('Escribe un motivo de al menos cinco caracteres.')));
+        return;
+      }
+    }
+    setState(() => busy = true);
+    try {
+      await client.decideIdentityRequest(id, approve: approve, reason: reason);
+      await _loadSupervisorRequests();
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(content:
+        Text(approve ? 'Identidad aprobada por cinco minutos. El operador debe confirmar el ingreso.'
+            : 'Solicitud rechazada. El operador verá el motivo.')));
+    } on DigniApiException catch (error) {
+      if (mounted) messengerKey.currentState?.showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Widget supervisorRequestsView() => shell(content([
+    title('Asistencia de supervisor'),
+    const SizedBox(height: 8),
+    sub('Las decisiones se registran. Una aprobación no marca el ingreso; '
+      'el operador debe comprobar que la persona sigue presente.'),
+    const SizedBox(height: 18),
+    OutlinedButton.icon(onPressed: online ? _loadSupervisorRequests : null,
+      icon: const Icon(Icons.refresh_rounded), label: const Text('Actualizar solicitudes')),
+    const SizedBox(height: 16),
+    if (!online) panel(const Text('La asistencia de supervisor requiere conexión.')),
+    if (online && supervisorRequests.isEmpty)
+      panel(const Text('No hay solicitudes pendientes.')),
+    for (final request in supervisorRequests) ...[
+      panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text((request['event_title'] ?? 'Evento').toString(),
+          style: TextStyle(color: ink, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 7),
+        Text('${request['operator_name'] ?? 'Operador'} necesita ayuda para validar acceso.'),
+        const SizedBox(height: 6),
+        sub('Entrada ${request['entry_number'] ?? ''}'),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: FilledButton(
+            onPressed: busy ? null : () => _resolveSupervisorRequest(
+              int.parse(request['id'].toString()), approve: true),
+            child: const Text('Aprobar'))),
+          const SizedBox(width: 9),
+          Expanded(child: OutlinedButton(
+            onPressed: busy ? null : () => _resolveSupervisorRequest(
+              int.parse(request['id'].toString()), approve: false),
+            child: const Text('Rechazar'))),
+        ]),
+      ])),
+      const SizedBox(height: 10),
+    ],
+  ]), back: true);
+
   Widget _drawer() {
     final eventTitle = preview
         ? (own ? 'Power Tour Rescue' : 'Expo Jardines')
@@ -1620,6 +2070,13 @@ class _DigniV3AppState extends State<DigniV3App> {
               if (!own)
                 drawerItem(Icons.query_stats_rounded, 'Contactos capturados', () {
                   _drawerAction(() => go(View.captures));
+                }),
+              if (canResolveIdentity)
+                drawerItem(Icons.support_agent_rounded, 'Solicitudes de identidad', () {
+                  _drawerAction(() {
+                    go(View.supervisorRequests);
+                    unawaited(_loadSupervisorRequests());
+                  });
                 }),
               drawerItem(
                 Icons.sync_rounded,
@@ -2462,7 +2919,25 @@ class _DigniV3AppState extends State<DigniV3App> {
         ])),
       ],
       const SizedBox(height: 21),
-      if (r.confirmEntry) FilledButton(
+      if (r.identityRequired && !r.identityApproved && r.reviewId == null)
+        FilledButton.icon(
+          onPressed: busy ? null : _verifyIdentity,
+          icon: const Icon(Icons.badge_outlined),
+          label: const Text('Verificar identidad'),
+        ),
+      if (r.identityRequired && !r.identityApproved && r.reviewId != null)
+        FilledButton.icon(
+          onPressed: busy ? null : _checkIdentityResolution,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('Consultar resolución'),
+        ),
+      if (r.identityRequired && r.identityApproved)
+        FilledButton.icon(
+          onPressed: busy ? null : _finalizeSupervisorEntry,
+          icon: const Icon(Icons.how_to_reg_rounded),
+          label: const Text('Aprobar ingreso'),
+        ),
+      if (r.confirmEntry && !r.identityRequired) FilledButton(
         onPressed: busy ? null : confirmEntry,
         child: const Text('Confirmar ingreso'),
       ),
@@ -2474,7 +2949,7 @@ class _DigniV3AppState extends State<DigniV3App> {
         ),
         const SizedBox(height: 9),
       ],
-      if (r.reenter) FilledButton(
+      if (r.reenter && !r.identityRequired) FilledButton(
         onPressed: busy ? null : confirmReentry,
         child: const Text('Confirmar reingreso'),
       ),
@@ -2617,7 +3092,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           Tone.warn, 'Confirmar ingreso',
           'Revisa los datos y confirma el ingreso de esta persona.',
           name: person.name, rut: person.maskedRut, ticketId: person.ticketId ?? person.id, entryNumber: person.entryNumber,
-          confirmEntry: !alreadyIn),
+          confirmEntry: !alreadyIn && !event.requiresIdentityCheck,
+          identityRequired: event.requiresIdentityCheck),
       'checkout' => Decision(
           Tone.warn, 'Registrar salida',
           'Confirma que la persona está saliendo del evento.',
@@ -2627,7 +3103,8 @@ class _DigniV3AppState extends State<DigniV3App> {
           Tone.warn, 'Confirmar reingreso',
           'Confirma el reingreso de esta persona.',
           name: person.name, rut: person.maskedRut, ticketId: person.ticketId ?? person.id, entryNumber: person.entryNumber,
-          reenter: alreadyIn || person.status == 'checked_out'),
+          reenter: alreadyIn || person.status == 'checked_out',
+          identityRequired: event.requiresIdentityCheck),
     };
     setState(() { decision = result; view = View.result; });
   }
@@ -3029,6 +3506,16 @@ class _DigniV3AppState extends State<DigniV3App> {
       child: Text(dark ? 'Modo claro' : 'Modo oscuro'),
     ),
     const SizedBox(height: 11),
+    panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Privacidad de la verificación de identidad',
+        style: TextStyle(fontWeight: FontWeight.w900)),
+      const SizedBox(height: 8),
+      sub('En eventos que lo requieran, tu consulta del RUT completo y cada decisión '
+        'quedan registradas. Una copia cifrada puede usarse temporalmente sin conexión '
+        'y se elimina al cerrar sesión o finalizar la jornada. Las notificaciones '
+        'de supervisor no incluyen datos del asistente.'),
+    ])),
+    const SizedBox(height: 11),
     OutlinedButton.icon(
       onPressed: launchLegalTerms,
       icon: const Icon(Icons.privacy_tip_outlined),
@@ -3057,6 +3544,7 @@ class _DigniV3AppState extends State<DigniV3App> {
       View.captures => captures(),
       View.info => info(),
       View.account => account(),
+      View.supervisorRequests => supervisorRequestsView(),
     };
     final theme = ThemeData(useMaterial3: true,
       brightness: dark ? Brightness.dark : Brightness.light,
