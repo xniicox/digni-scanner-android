@@ -1326,8 +1326,8 @@ class _DigniV3AppState extends State<DigniV3App> {
       if (choice == 'approve') {
         await _approveVerifiedIdentity(current, reviewId: reviewId, offlineProof: proof);
       } else if (choice == 'supervisor' && reviewId != null) {
-        await sessions.markSupervisorEscalated(current.ticketId!);
         final response = await api!.requestSupervisor(reviewId);
+        await sessions.markSupervisorEscalated(current.ticketId!);
         if (!mounted) return;
         _showDecision(Decision(Tone.warn, 'Asistencia solicitada',
           'El supervisor debe resolver la solicitud. No se ha registrado el ingreso.',

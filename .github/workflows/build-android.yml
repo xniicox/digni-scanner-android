@@ -110,13 +110,13 @@ jobs:
       - name: Test QR and journey dates
         run: flutter test test/civil_qr_test.dart test/journey_dates_test.dart
 
-      - name: Build production APK
+      - name: Build APK candidate for validation
         run: |
           flutter build apk --release --dart-define=DIGNI_PREVIEW=false --dart-define=DIGNI_API_BASE=https://makita.cl --dart-define=DIGNI_FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" --dart-define=DIGNI_FIREBASE_APP_ID="$FIREBASE_APP_ID" --dart-define=DIGNI_FIREBASE_API_KEY="$FIREBASE_API_KEY" --dart-define=DIGNI_FIREBASE_SENDER_ID="$FIREBASE_SENDER_ID"
 
-      - name: Upload APK
+      - name: Upload APK candidate
         uses: actions/upload-artifact@v4
         with:
-          name: digni-scanner-1.2.0-production
+          name: digni-scanner-1.2.0-build-candidate
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error

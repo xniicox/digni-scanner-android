@@ -8,4 +8,6 @@ La app usa los logos DIGNI en claro/oscuro, icono oficial, lectura QR y cédula,
 
 El proyecto Firebase `digni-scanner` ya tiene registrada la app Android. El workflow usa los identificadores públicos de `firebase/google-services.json`. Las credenciales de la cuenta de servicio Firebase pertenecen exclusivamente al backend y nunca deben incluirse en el APK.
 
+El APK que sube GitHub Actions es un **candidato de compilación**. No instalarlo como versión definitiva: el proyecto Android se regenera en cada ejecución y su firma de depuración cambia. La APK privada para los teléfonos DIGNI debe firmarse con la clave de publicación estable conservada fuera del repositorio. El cambio desde una versión anterior con otra firma exige desinstalar la anterior después de sincronizar todos los registros pendientes.
+
 **Estado:** el código fuente está preparado. No se ha compilado ni probado con Flutter, WordPress productivo, Firebase ni teléfonos reales en este entorno. No instalar como versión final sin ejecutar la matriz de pruebas del documento de integración.
