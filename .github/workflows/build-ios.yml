@@ -1,0 +1,60 @@
+name: Build DIGNI Scanner iOS
+
+on:
+  push:
+    branches:
+      - ios-preview
+  workflow_dispatch:
+
+jobs:
+  ios-preview:
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Checkout DIGNI Scanner
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate iOS project
+        run: flutter create --platforms=ios --org cl.digni --project-name digni_scanner .
+
+      - name: Configure DIGNI iOS app
+        run: python3 scripts/configure_ios.py
+
+      - name: Remove generated template test
+        run: python3 -c "from pathlib import Path; Path('test/widget_test.dart').unlink(missing_ok=True)"
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Generate official DIGNI iOS icon
+        run: dart run flutter_launcher_icons -f flutter_launcher_icons_ios.yaml
+
+      - name: Check Dart and Flutter code
+        run: flutter analyze lib/main.dart lib/v3/app.dart lib/v3/api.dart lib/v3/civil_qr.dart lib/v3/journey_dates.dart lib/v3/session_store.dart test/civil_qr_test.dart test/journey_dates_test.dart --no-fatal-infos --no-fatal-warnings
+
+      - name: Test QR and journey dates
+        run: flutter test test/civil_qr_test.dart test/journey_dates_test.dart
+
+      - name: Compile unsigned iOS app
+        run: flutter build ios --release --no-codesign --dart-define=DIGNI_PREVIEW=false --dart-define=DIGNI_API_BASE=https://makita.cl
+
+      - name: Upload iOS test project
+        uses: actions/upload-artifact@v4
+        with:
+          name: digni-scanner-1.1.5-ios-test-project
+          path: |
+            ios/
+            lib/
+            assets/
+            scripts/configure_ios.py
+            flutter_launcher_icons_ios.yaml
+            pubspec.yaml
+            pubspec.lock
+          if-no-files-found: error
+          retention-days: 14
