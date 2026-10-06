@@ -1,7 +1,4 @@
-# DIGNI Scanner V3 — Android
 
-Este branch contiene la aplicación Android basada en Figma V3:
-https://www.figma.com/design/oC0XU6mwh7AoBIBk5rrr91
 
 ## Funcionalidades
 
